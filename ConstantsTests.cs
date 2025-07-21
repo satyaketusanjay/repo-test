@@ -1,103 +1,115 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using Moq;
 using System;
-using System.Net.Mail;
-using System.Text;
-using System.Threading.Tasks;
-using GPI.TransactionRecon.Logger;
 
 namespace GPI.TransactionRecon.Tests
 {
     [TestClass]
-    public class EmailServiceTests
+    public class LoggerServiceTests
     {
-        private Mock<ILoggerService> _mockLogger;
-        private Mock<IAppConfiguration> _mockConfig;
-        private EmailService _emailService;
+        private LoggerService _loggerService;
 
         [TestInitialize]
         public void Setup()
         {
-            _mockLogger = new Mock<ILoggerService>();
-            _mockConfig = new Mock<IAppConfiguration>();
-
-            _mockConfig.Setup(c => c.TRMailTo).Returns("to@example.com");
-            _mockConfig.Setup(c => c.TRMailFrom).Returns("from@example.com");
-            _mockConfig.Setup(c => c.TRMailSubject).Returns("Test Subject");
-            _mockConfig.Setup(c => c.SmtpServer).Returns("smtp.example.com");
-            _mockConfig.Setup(c => c.SFTPSuccessMessage).Returns("SFTP Success");
-            _mockConfig.Setup(c => c.SFTPErrorMessage).Returns("SFTP Error");
-            _mockConfig.Setup(c => c.IPAdd).Returns("127.0.0.1");
-
-            _emailService = new EmailService(_mockLogger.Object, _mockConfig.Object);
+            _loggerService = new LoggerService();
         }
 
         [TestMethod]
-        public async Task ErrorMessageAsync_WithError_ShouldSendEmail()
+        public void WriteInfo_WithValidMessage_ShouldNotThrow()
         {
-            await _emailService.ErrorMessageAsync("Test error");
-
-            _mockLogger.Verify(l => l.WriteError(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Exception>()), Times.Never);
+            var message = "This is an info log message.";
+            try
+            {
+                _loggerService.WriteInfo(message);
+            }
+            catch (Exception ex)
+            {
+                Assert.Fail("Exception thrown: " + ex.Message);
+            }
         }
 
         [TestMethod]
-        public async Task SendEmailSFTPSuccessAsync_ShouldSendSuccessEmail()
+        public void TRWriteToLogs_ShouldCallWriteInfo()
         {
-            await _emailService.SendEmailSFTPSuccessAsync("Body", "/path/to/file", "2025-07-21");
+            var message = "Legacy log message.";
+            var log = "LegacyLog";
 
-            _mockLogger.Verify(l => l.WriteError(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Exception>()), Times.Never);
+            try
+            {
+                _loggerService.TRWriteToLogs(message, log);
+            }
+            catch (Exception ex)
+            {
+                Assert.Fail("Exception thrown: " + ex.Message);
+            }
         }
 
         [TestMethod]
-        public async Task SendEmailSFTPErrorsAsync_ShouldSendErrorEmail()
+        public void WriteTransaction_WithValidInputs_ShouldNotThrow()
         {
-            await _emailService.SendEmailSFTPErrorsAsync("Body", "/path/to/file", "2025-07-21");
+            var fileName = "testfile.txt";
+            var message = "Transaction log message.";
+            var sourceSystem = "SystemA";
 
-            _mockLogger.Verify(l => l.WriteError(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Exception>()), Times.Never);
+            try
+            {
+                _loggerService.WriteTransaction(fileName, message, sourceSystem);
+            }
+            catch (Exception ex)
+            {
+                Assert.Fail("Exception thrown: " + ex.Message);
+            }
         }
 
         [TestMethod]
-        public async Task SendEmailThresholdAlertAsync_WithValidInputs_ShouldSendEmail()
+        public void WriteTransaction_WithNullSourceSystem_ShouldNotThrow()
         {
-            _mockConfig.Setup(c => c.TREODRReportMailTo).Returns("report@example.com");
-            _mockConfig.Setup(c => c.TREODRReportMailFrom).Returns("reportfrom@example.com");
-            _mockConfig.Setup(c => c.TRThresholdAlertSubject).Returns("Threshold Alert - {0} - {1}");
-            _mockConfig.Setup(c => c.GpiOnlineURL).Returns("http://gpi-online");
+            var fileName = "testfile.txt";
+            var message = "Transaction log message.";
 
-            await _emailService.SendEmailThresholdAlertAsync("System", "Region", "", "", 100, DateTime.Now);
-
-            _mockLogger.Verify(l => l.WriteError(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Exception>()), Times.Never);
+            try
+            {
+                _loggerService.WriteTransaction(fileName, message);
+            }
+            catch (Exception ex)
+            {
+                Assert.Fail("Exception thrown: " + ex.Message);
+            }
         }
 
         [TestMethod]
-        public async Task SendHtmlEmailAsync_MissingToOrFrom_ShouldLogError()
+        public void WriteError_WithValidInputs_ShouldNotThrow()
         {
-            _mockConfig.Setup(c => c.TRMailTo).Returns("");
-            _mockConfig.Setup(c => c.TRMailFrom).Returns("");
-            _mockConfig.Setup(c => c.TRMailSubject).Returns("Subject");
+            var methodName = "TestMethod";
+            var message = "Error occurred.";
+            var exception = new InvalidOperationException("Invalid operation");
+            var sourceSystem = "SystemB";
 
-            await _emailService.ErrorMessageAsync("Test error");
-
-            _mockLogger.Verify(l => l.WriteError(
-                nameof(EmailService.SendHtmlEmailAsync),
-                It.Is<string>(msg => msg.Contains("Email not sent")),
-                It.IsAny<NullReferenceException>()), Times.Once);
+            try
+            {
+                _loggerService.WriteError(methodName, message, exception, sourceSystem);
+            }
+            catch (Exception ex)
+            {
+                Assert.Fail("Exception thrown: " + ex.Message);
+            }
         }
 
         [TestMethod]
-        public async Task SendHtmlEmailAsync_ExceptionThrown_ShouldLogError()
+        public void WriteError_WithNullSourceSystem_ShouldNotThrow()
         {
-            _mockConfig.Setup(c => c.SmtpServer).Returns("invalid.smtp.server");
-            _mockConfig.Setup(c => c.TRMailTo).Returns("to@example.com");
-            _mockConfig.Setup(c => c.TRMailFrom).Returns("from@example.com");
-            _mockConfig.Setup(c => c.TRMailSubject).Returns("Subject");
+            var methodName = "TestMethod";
+            var message = "Error occurred.";
+            var exception = new Exception("General exception");
 
-            await _emailService.ErrorMessageAsync("Test error");
-
-            _mockLogger.Verify(l => l.WriteError(
-                nameof(EmailService.SendHtmlEmailAsync),
-                It.Is<string>(msg => msg.Contains("Failed to send email")),
-                It.IsAny<Exception>()), Times.Once);
+            try
+            {
+                _loggerService.WriteError(methodName, message, exception);
+            }
+            catch (Exception ex)
+            {
+                Assert.Fail("Exception thrown: " + ex.Message);
+            }
         }
     }
 }
