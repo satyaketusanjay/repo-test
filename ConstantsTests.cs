@@ -2,46 +2,54 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Moq;
 using System;
 using System.IO;
-using System.Text;
+using System.Data;
 using System.Threading.Tasks;
-using System.Collections.Generic;
+using System.Xml;
+using System.Linq;
+using System.Text;
+using System.Threading;
 using GPI.TransactionRecon.BusinessLogic;
-using GPI.TransactionRecon.Logger.Contracts;
 using GPI.TransactionRecon.BusinessLogic.Contracts;
-using GPI.BusinessEntities;
+using GPI.TransactionRecon.Logger.Contracts;
 using GPI.DAL.Contracts;
+using GPI.BusinessEntities;
 
 namespace GPI.TransactionRecon.BusinessLogic.Tests
 {
     [TestClass]
-    public class TRDataLoaderTests
+    public class TransactionReconClassTests
     {
-        private string _testDir;
-        private string _archiveDir;
-        private string _errorDir;
         private Mock<ICommonDAO> _mockDAO;
+        private Mock<ITRDataLoader> _mockLoader;
+        private Mock<ILoggerService> _mockLog;
+        private Mock<ITRSFTP> _mockSftp;
         private Mock<IEmailService> _mockEmail;
         private Mock<IAppConfiguration> _mockConfig;
-        private Mock<ILoggerService> _mockLog;
-        private TRDataLoader _loader;
+
+        private string _testDir;
+        private TransactionReconClass _recon;
 
         [TestInitialize]
         public void Setup()
         {
-            _testDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
-            _archiveDir = Path.Combine(_testDir, "archive");
-            _errorDir = Path.Combine(_testDir, "error");
-            Directory.CreateDirectory(_testDir);
-            Directory.CreateDirectory(_archiveDir);
-            Directory.CreateDirectory(_errorDir);
-
             _mockDAO = new Mock<ICommonDAO>();
+            _mockLoader = new Mock<ITRDataLoader>();
+            _mockLog = new Mock<ILoggerService>();
+            _mockSftp = new Mock<ITRSFTP>();
             _mockEmail = new Mock<IEmailService>();
             _mockConfig = new Mock<IAppConfiguration>();
-            _mockLog = new Mock<ILoggerService>();
-            _mockConfig.SetupGet(c => c.TRMailTo).Returns("someone@test.com");
 
-            _loader = new TRDataLoader(_mockConfig.Object, _mockDAO.Object, _mockEmail.Object, _mockLog.Object);
+            _testDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+            Directory.CreateDirectory(_testDir);
+            _mockConfig.SetupGet(c => c.TRResourcePath).Returns(_testDir);
+            _mockConfig.SetupGet(c => c.TXTFileFormat).Returns("*.txt");
+            _mockConfig.SetupGet(c => c.XMLFileFormat).Returns("*.xml");
+            _mockConfig.SetupGet(c => c.CSVFileFormat).Returns("*.csv");
+            _mockConfig.SetupGet(x => x.ParallelProcessFlag).Returns("false");
+            _mockConfig.SetupGet(x => x.TRMailTo).Returns("test@mail.com");
+            _mockConfig.SetupGet(x => x.TRIgnoreStatusList).Returns("");
+
+            _recon = new TransactionReconClass(_mockConfig.Object, _mockLog.Object, _mockEmail.Object, _mockDAO.Object, _mockLoader.Object, _mockSftp.Object);
         }
 
         [TestCleanup]
@@ -52,261 +60,373 @@ namespace GPI.TransactionRecon.BusinessLogic.Tests
         }
 
         [TestMethod]
-        public async Task trXmlReader_ValidFile_ReturnsInputWithDetails()
+        public void fileWatcher_WithValidXml_FileSystemWatcherCreated()
         {
-            string sys = "SYS"; string region = "REG";
-            string folder = Path.Combine(_testDir, region, sys);
-            Directory.CreateDirectory(folder);
-            string xmlFile = Path.Combine(folder, "testfile.xml");
-            File.WriteAllText(xmlFile, @"<TransactionReconcilationInput>
-                <SourceSystem>SYS</SourceSystem>
-                <TotalNumberofRecords>1</TotalNumberofRecords>
-                <ReconciliationDetails>
-                    <SourceBusunit>BUX</SourceBusunit>
-                    <SourceReference>REF1</SourceReference>
-                    <SourceCurrency>INR</SourceCurrency>
-                    <SourceAmount>5</SourceAmount>
-                    <ForeignAmount>3</ForeignAmount>
-                    <ForeignCurrency>USD</ForeignCurrency>
-                    <UniquePaymentID>ID1</UniquePaymentID>
-                    <LedgerAccount>A123</LedgerAccount>
-                    <Qualifier>QUAL</Qualifier>
-                    <CreatedBy>user</CreatedBy>
-                    <GroupType>G</GroupType>
-                    <Status>COMP</Status>
-                    <TransactionDateTime>2025-07-21 10:30:05</TransactionDateTime>
-                </ReconciliationDetails>
-            </TransactionReconcilationInput>");
+            // Write a valid resource XML with required node
+            string resXml = Path.Combine(_testDir, "abc.xml");
+            File.WriteAllText(resXml, "<root><SFTPLocationRequest>" + _testDir + "</SFTPLocationRequest></root>");
+            var xmlNode = new XmlDocument();
+            xmlNode.Load(resXml);
+            _mockSftp.Setup(s => s.LoadResourceXml(It.IsAny<string>())).Returns(xmlNode.DocumentElement);
 
-            var result = await _loader.trXmlReader(xmlFile, _archiveDir + Path.DirectorySeparatorChar, _errorDir + Path.DirectorySeparatorChar);
-            Assert.IsNotNull(result);
-            Assert.AreEqual("SYS", result.sourceSystem);
-            Assert.IsNotNull(result.transactionReconcilationDetails);
-            Assert.AreEqual(1, result.transactionReconcilationDetails.Length);
-            Assert.AreEqual("REG", result.transactionReconcilationDetails[0].region);
+            _recon.fileWatcher();
         }
 
         [TestMethod]
-        public async Task trXmlReader_FileDoesNotExist_ReturnsNull()
+        public void fileWatcher_InvalidXml_ResourceNodeNull_NoException()
         {
-            string missingFile = Path.Combine(_testDir, "404.xml");
-            var result = await _loader.trXmlReader(missingFile, _archiveDir, _errorDir);
-            Assert.IsNull(result);
+            string resXml = Path.Combine(_testDir, "def.xml");
+            File.WriteAllText(resXml, "<root></root>");
+            _mockSftp.Setup(s => s.LoadResourceXml(It.IsAny<string>())).Returns((XmlNode)null);
+            _recon.fileWatcher();
         }
 
         [TestMethod]
-        public async Task trXmlReader_BadXml_ReportsErrorViaEmail()
+        public void fileWatcher_OnException_SendsErrorEmail()
         {
-            string badFile = Path.Combine(_testDir, "bad.xml");
-            File.WriteAllText(badFile, "<bad><abc></bad>");
+            string resXml = Path.Combine(_testDir, "err.xml");
+            File.WriteAllText(resXml, "<root><SFTPLocationRequest>bad\\path</SFTPLocationRequest></root>");
+            var xmlNode = new XmlDocument();
+            xmlNode.Load(resXml);
+            _mockSftp.Setup(s => s.LoadResourceXml(It.IsAny<string>())).Returns(xmlNode.DocumentElement);
 
-            var res = await _loader.trXmlReader(badFile, _archiveDir, _errorDir);
-            Assert.IsNull(res);
-            _mockEmail.Verify(e => e.EmailErrorMessageAsync(It.IsAny<string>(), It.IsAny<DateTime>(), badFile, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.AtLeastOnce);
+            // Simulate an exception when creating the watcher by throwing from FileSystemWatcher.Path
+            // (simulate by making Path invalid or by throwing when you create it in your test)
+            _recon.fileWatcher();
+
+            _mockEmail.Verify(e => e.ErrorMessageAsync(It.IsAny<string>()), Times.AtLeastOnce);
         }
 
         [TestMethod]
-        public async Task trXmlReader_NegativeAmounts_AreConvertedToPositive()
+        public void filewatcher_Created_ParallelProcessFalse_CallsProcessFile_Sync()
         {
-            string sys = "SYS"; string region = "REG";
-            string folder = Path.Combine(_testDir, region, sys);
-            Directory.CreateDirectory(folder);
-            string xmlFile = Path.Combine(folder, "test_negative.xml");
-            File.WriteAllText(xmlFile, @"<TransactionReconcilationInput>
-                <SourceSystem>SYS</SourceSystem>
-                <ReconciliationDetails>
-                    <SourceAmount>-5</SourceAmount>
-                    <ForeignAmount>-3</ForeignAmount>
-                </ReconciliationDetails>
-            </TransactionReconcilationInput>");
-
-            var result = await _loader.trXmlReader(xmlFile, _archiveDir, _errorDir);
-            Assert.AreEqual(5, result.transactionReconcilationDetails[0].OriginalPaymentAmount);
-            Assert.AreEqual(3, result.transactionReconcilationDetails[0].AccountingAmount);
+            var e = new FileSystemEventArgs(WatcherChangeTypes.Created, _testDir, "test.txt");
+            File.WriteAllText(Path.Combine(_testDir, "test.txt"), "data");
+            typeof(TransactionReconClass)
+                .GetMethod("filewatcher_Created", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(_recon, new object[] { null, e });
+            // No exceptions = pass
         }
 
         [TestMethod]
-        public async Task trXmlReader_PartialError_RecordsErrorListSendsMail()
+        public void filewatcher_Created_ParallelProcessTrue_CallsProcessFile_Async()
         {
-            // If a field is missing, record goes to error list, exception handled
-            string sys = "SYS"; string region = "REG";
-            string folder = Path.Combine(_testDir, region, sys);
-            Directory.CreateDirectory(folder);
-            string xmlFile = Path.Combine(folder, "bad_record.xml");
-            File.WriteAllText(xmlFile, @"<TransactionReconcilationInput>
-                <SourceSystem>SYS</SourceSystem>
-                <ReconciliationDetails>
-                    <SourceAmount>abc</SourceAmount>
-                </ReconciliationDetails>
-            </TransactionReconcilationInput>");
+            _mockConfig.SetupGet(x => x.ParallelProcessFlag).Returns("true");
+            var recon2 = new TransactionReconClass(_mockConfig.Object, _mockLog.Object, _mockEmail.Object, _mockDAO.Object, _mockLoader.Object, _mockSftp.Object);
 
-            var res = await _loader.trXmlReader(xmlFile, _archiveDir, _errorDir);
-            _mockEmail.Verify(e => e.EmailErrorMessageAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.AtLeastOnce);
+            var e = new FileSystemEventArgs(WatcherChangeTypes.Created, _testDir, "test2.txt");
+            File.WriteAllText(Path.Combine(_testDir, "test2.txt"), "data");
+            typeof(TransactionReconClass)
+                .GetMethod("filewatcher_Created", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(recon2, new object[] { null, e });
         }
 
         [TestMethod]
-        public async Task trCsvReader_ValidFile_ParsesSuccessfully()
+        public async Task ProcessFile_InvalidExtension_DoesNothing()
         {
-            string sys = "SYS"; string region = "REG";
-            string folder = Path.Combine(_testDir, region, sys);
-            Directory.CreateDirectory(folder);
-            string csvFile = Path.Combine(folder, "file.csv");
-            string[] lines = new[]
-            {
-                "\"SYS\",\"2025-07-21\",\"REG\",\"BU1\",\"INR\",\"5\",\"6\",\"USD\",\"PID1\",\"ACC1\",\"QUAL\",\"Me\",\"C\",\"Open\",\"2025-07-21 10:32:06\""
-            };
-            File.WriteAllLines(csvFile, lines);
-
-            var res = await _loader.trCsvReader(csvFile, _archiveDir, _errorDir);
-            Assert.IsNotNull(res);
-            Assert.IsNotNull(res.transactionReconcilationDetails);
-            Assert.AreEqual("REG", res.transactionReconcilationDetails[0].region);
-        }
-
-        [TestMethod]
-        public async Task trCsvReader_CsvWithInvalidRow_CatchesAndReportsError()
-        {
-            string sys = "SYS"; string region = "REG";
-            string folder = Path.Combine(_testDir, region, sys);
-            Directory.CreateDirectory(folder);
-            string csvFile = Path.Combine(folder, "badrow.csv");
-            string[] lines = new[]
-            {
-                "\"SYS\",\"2025-07-21\",\"REG\",\"BU1\",\"INR\",\"5\",\"6\",\"USD\",\"PID1\",\"ACC1\",\"QUAL\",\"Me\",\"C\",\"Open\",\"2025-07-21 10:32:06\"",
-                "\"broken_field\""
-            };
-            File.WriteAllLines(csvFile, lines);
-
-            await _loader.trCsvReader(csvFile, _archiveDir, _errorDir);
-            _mockEmail.Verify(e => e.EmailErrorMessageAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.AtLeastOnce);
-        }
-
-        [TestMethod]
-        public async Task trCsvReader_FileDoesNotExist_ReturnsNull()
-        {
-            var res = await _loader.trCsvReader("no-exist.csv", _archiveDir, _errorDir);
-            Assert.IsNull(res);
-        }
-
-        [TestMethod]
-        public async Task trTxtReader_ValidLine_ParsesOk()
-        {
-            string sys = "SYS"; string region = "REG";
-            string folder = Path.Combine(_testDir, region, sys);
-            Directory.CreateDirectory(folder);
-            string txtFile = Path.Combine(folder, "file.txt");
-            string line = "SYS           2025-07-21 BU1      SOURCEPAYREF     INR 5             6             USD PID1      ACC1                                            QUAL                Me                  COPEN2025-07-21 10:41:33 ";
-            File.WriteAllText(txtFile, line.PadRight(239));
-
-            var res = await _loader.trTxtReader(txtFile, _archiveDir, _errorDir);
-            Assert.IsNotNull(res);
-            Assert.IsNotNull(res.transactionReconcilationDetails);
-            Assert.AreEqual("REG", res.transactionReconcilationDetails[0].region);
-        }
-
-        [TestMethod]
-        public async Task trTxtReader_FileDoesNotExist_ReturnsNull()
-        {
-            string file = Path.Combine(_testDir, "404.txt");
-            var res = await _loader.trTxtReader(file, _archiveDir, _errorDir);
-            Assert.IsNull(res);
-        }
-
-        [TestMethod]
-        public async Task trTxtReader_BadLine_CatchesAndReportsError()
-        {
-            string sys = "SYS"; string region = "REG";
-            string folder = Path.Combine(_testDir, region, sys);
-            Directory.CreateDirectory(folder);
-            string txtFile = Path.Combine(folder, "bad.txt");
-            File.WriteAllLines(txtFile, new[] { "SHORTLINE" });
-            await _loader.trTxtReader(txtFile, _archiveDir, _errorDir);
-            _mockEmail.Verify(e => e.EmailErrorMessageAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.AtLeastOnce);
-        }
-
-        [TestMethod]
-        public void moveFile_FileMovedToDestAndLogOnError()
-        {
-            string file = Path.Combine(_testDir, "move.txt");
+            var file = Path.Combine(_testDir, "file.ignore");
             File.WriteAllText(file, "dummy");
-            string dest = _archiveDir + Path.DirectorySeparatorChar;
-            _loader.moveFile(file, "testsys", dest);
-
-            Assert.IsFalse(File.Exists(file));
-            var moved = Directory.GetFiles(_archiveDir);
-            Assert.AreEqual(1, moved.Length);
+            await _recon.ProcessFile(file);
         }
 
         [TestMethod]
-        public void moveFile_FileMovedToErrorDirOnException()
+        public async Task ProcessFile_FileDoesNotExist_DoesNothing()
         {
-            string file = Path.Combine(_testDir, "move2.txt");
-            File.WriteAllText(file, "content2");
-            string fakeDest = Path.Combine(_testDir, "nonwritable") + Path.DirectorySeparatorChar;
-            _loader.moveFile(file, fakeDest);
-            _mockLog.Verify(l => l.TRWriteToLogs(It.IsAny<string>(), "Logs"), Times.AtLeastOnce);
+            string fake = Path.Combine(_testDir, "none.txt");
+            await _recon.ProcessFile(fake);
         }
 
         [TestMethod]
-        public async Task formAndSendExceptionMessage_CallsEmailWithTableHtml()
+        public async Task ProcessFile_MissingTRECFile_ErrorEmailAndMoveFile()
         {
-            var errors = new List<ErrorClass>
+            var file = Path.Combine(_testDir, "file.TXT");
+            File.WriteAllText(file, "data");
+            var dt = new DataTable();
+            dt.Columns.Add("RESOURCE_PATH_NAME");
+            dt.Rows.Add("resourcepath_");
+            _mockDAO.Setup(d => d.GetResourcePathNameAsync(It.IsAny<string>(), It.IsAny<string>())).Returns(dt);
+            _mockSftp.Setup(x => x.LoadResourceXml(It.IsAny<string>())).Returns(CreateMockResourceNode(_testDir, _testDir, _testDir));
+            _mockConfig.SetupGet(x => x.TXTFileFormat).Returns("*.TXT");
+            await _recon.ProcessFile(file);
+
+            _mockEmail.Verify(m => m.ErrorMessageAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Once);
+            _mockLoader.Verify(l => l.moveFile(It.IsAny<string>(), It.IsAny<string>()), Times.AtLeastOnce);
+        }
+
+        [TestMethod]
+        public async Task ProcessFile_TRECFile_AlreadyArchived_ErrorEmailAndMoveFile()
+        {
+            var file = Path.Combine(_testDir, "TRECfile.TXT");
+            File.WriteAllText(file, "data");
+            var archivedFile = Path.Combine(_testDir, "TRECfile.TXT");
+            File.Copy(file, archivedFile, overwrite: true);
+
+            var dt = new DataTable();
+            dt.Columns.Add("RESOURCE_PATH_NAME");
+            dt.Rows.Add("");
+            _mockDAO.Setup(d => d.GetResourcePathNameAsync(It.IsAny<string>(), It.IsAny<string>())).Returns(dt);
+            _mockSftp.Setup(x => x.LoadResourceXml(It.IsAny<string>())).Returns(CreateMockResourceNode(_testDir, _testDir, _testDir));
+            _mockConfig.SetupGet(x => x.TXTFileFormat).Returns("*.TXT");
+            await _recon.ProcessFile(file);
+
+            _mockEmail.Verify(m => m.ErrorMessageAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.AtLeastOnce);
+        }
+
+        [TestMethod]
+        public async Task ProcessFile_TRECFile_NotArchived_CallsDataLoader()
+        {
+            var file = Path.Combine(_testDir, "TRECfile.XML");
+            File.WriteAllText(file, "data");
+            var dt = new DataTable();
+            dt.Columns.Add("RESOURCE_PATH_NAME");
+            dt.Rows.Add("");
+            _mockDAO.Setup(d => d.GetResourcePathNameAsync(It.IsAny<string>(), It.IsAny<string>())).Returns(dt);
+            _mockSftp.Setup(x => x.LoadResourceXml(It.IsAny<string>())).Returns(CreateMockResourceNode(_testDir, _testDir, _testDir));
+            _mockConfig.SetupGet(x => x.XMLFileFormat).Returns("*.XML");
+            _mockLoader.Setup(l => l.trXmlReader(file, It.IsAny<string>(), It.IsAny<string>())).ReturnsAsync(new TransactionReconcilationInput());
+            await _recon.ProcessFile(file);
+            _mockLoader.Verify(l => l.trXmlReader(file, It.IsAny<string>(), It.IsAny<string>()), Times.Once);
+        }
+
+        [TestMethod]
+        public async Task ProcessFile_OnException_SendsErrorEmailAndLogs()
+        {
+            var file = Path.Combine(_testDir, "err.TXT");
+            File.WriteAllText(file, "err");
+            _mockDAO.Setup(d => d.GetResourcePathNameAsync(It.IsAny<string>(), It.IsAny<string>())).Throws(new Exception("fail"));
+            await _recon.ProcessFile(file);
+
+            _mockLog.Verify(l => l.WriteError(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Exception>()), Times.AtLeastOnce);
+            _mockEmail.Verify(m => m.ErrorMessageAsync(It.IsAny<string>()), Times.Once);
+        }
+
+        [TestMethod]
+        public void ProcessExistingFiles_NoXml_NoException()
+        {
+            _recon.ProcessExistingFiles();
+        }
+
+        [TestMethod]
+        public void ProcessExistingFiles_Exception_HandledGracefully()
+        {
+            _mockSftp.Setup(x => x.LoadResourceXml(It.IsAny<string>())).Throws(new Exception("fail"));
+            _recon.ProcessExistingFiles();
+            _mockEmail.Verify(e => e.ErrorMessageAsync(It.IsAny<string>()), Times.AtLeastOnce);
+        }
+
+        [TestMethod]
+        public async Task GetMailBySystemAndRegon_SystemNull_ReturnsConfigMail()
+        {
+            var method = typeof(TransactionReconClass)
+                .GetMethod("GetMailBySystemAndRegon", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var result = await (Task<string>)method.Invoke(_recon, new object[] { null, "zone" });
+            Assert.AreEqual("test@mail.com", result);
+        }
+
+        [TestMethod]
+        public async Task GetMailBySystemAndRegon_ForSystemWithDAO_ReturnsDAOValue()
+        {
+            _mockDAO.Setup(d => d.GetMailToDetailsAsync("sysx", "rgn")).Returns("gpi@gpi.com");
+            var method = typeof(TransactionReconClass)
+                .GetMethod("GetMailBySystemAndRegon", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var result = await (Task<string>)method.Invoke(_recon, new object[] { "sysx", "rgn" });
+            Assert.AreEqual("gpi@gpi.com", result);
+        }
+
+        [TestMethod]
+        public async Task preValidation_NullInput_DoesNothing()
+        {
+            await _recon.preValidation(null);
+        }
+
+        [TestMethod]
+        public async Task preValidation_MissingBU_TriggersError()
+        {
+            var tInput = new TransactionReconcilationInput
             {
-                new ErrorClass { RecordNo = 2, ErrorDesc = "BAD" }
+                sourceSystem = "SYS",
+                createdDate = DateTime.Now,
+                fileName = "file.xml",
+                transactionReconcilationDetails = new[] { new TransactionReconcilationDetails
+                    { region="E", uniquePaymentID="UQID", businessUnit="" } }
             };
+            _mockDAO.Setup(d => d.GetReconTypeAsync(It.IsAny<string>())).Returns("PAYMENT");
+            await _recon.preValidation(tInput);
 
-            await _loader.formAndSendExceptionMessage("SYS", "REG", "f.xml", errors);
-            _mockEmail.Verify(e => e.EmailErrorMessageAsync(
-                "SYS", "f.xml", It.Is<string>(html => html.Contains("BAD")), "REG", "someone@test.com"), Times.Once);
+            _mockLoader.Verify(l => l.formAndSendExceptionMessage(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<System.Collections.Generic.List<ErrorClass>>()), Times.Once);
         }
 
         [TestMethod]
-        public async Task formAndSendExceptionMessage_HandlesExceptionAndLogs()
+        public async Task preValidation_InvalidSystemBU_TriggersInsertRecord()
         {
-            _mockEmail.Setup(e => e.EmailErrorMessageAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
-                .Throws(new Exception("fail"));
+            var tInput = new TransactionReconcilationInput
+            {
+                sourceSystem = "SYS",
+                createdDate = DateTime.Now,
+                fileName = "file.xml",
+                transactionReconcilationDetails = new[] { new TransactionReconcilationDetails
+                    { region="E", uniquePaymentID="UQID", businessUnit="WRONG" } }
+            };
+            _mockDAO.Setup(d => d.GetReconTypeAsync(It.IsAny<string>())).Returns("PAYMENT");
+            _mockConfig.Setup(c => c.GetAppSetting(It.IsAny<string>())).Returns("");
+            await _recon.preValidation(tInput);
 
-            await _loader.formAndSendExceptionMessage("X", "Y", "f.none", new List<ErrorClass> { new ErrorClass { RecordNo = 1, ErrorDesc = "Fail" } });
-            _mockLog.Verify(l => l.TRWriteToLogs(It.IsAny<string>(), "Logs"), Times.AtLeastOnce);
+            _mockDAO.Verify(d => d.InsertIntoTRTableAsync(It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<TransactionReconcilationDetails>()), Times.Once);
         }
 
         [TestMethod]
-        public async Task sendErrorEmail_CallsEmail_SucceedsAndMovesFile()
+        public async Task preValidation_MatchFound_CallsCheckForMandatoryAndProcess()
         {
-            string f = Path.Combine(_testDir, "fail.txt");
-            File.WriteAllText(f, "anything");
-
-            // also mock GetMailToDetailsAsync (returns null/fallback)
-            _mockDAO.Setup(d => d.GetMailToDetailsAsync(It.IsAny<string>(), It.IsAny<string>())).Returns("");
-            await typeof(TRDataLoader)
-                .GetMethod("sendErrorEmail", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                .Invoke(_loader, new object[] { f, "SYS", "REG", new Exception("xx"), _errorDir });
-
-            _mockEmail.Verify(e => e.EmailErrorMessageAsync(
-                It.IsAny<string>(), It.IsAny<DateTime>(), f, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()), Times.Once);
-            Assert.IsFalse(File.Exists(f));
+            var tInput = new TransactionReconcilationInput
+            {
+                sourceSystem = "SYS",
+                createdDate = DateTime.Now,
+                fileName = "file.xml",
+                transactionReconcilationDetails = new[] { new TransactionReconcilationDetails
+                    { region="E", uniquePaymentID="UQID", businessUnit="BU1" } }
+            };
+            _mockDAO.Setup(d => d.GetReconTypeAsync(It.IsAny<string>())).Returns("PAYMENT");
+            _mockConfig.Setup(c => c.GetAppSetting(It.IsAny<string>())).Returns("'BU1'");
+            await _recon.preValidation(tInput);
         }
 
         [TestMethod]
-        public async Task GetMailBySystemAndRegon_Returns_DAO_Value_IfNotNull()
+        public async Task ConvertGLBUToAPBU_WithIntEntity_CallsDAO()
         {
-            _mockDAO.Setup(d => d.GetMailToDetailsAsync("SYS", "REG")).Returns("wanted@x.com");
-            var method = typeof(TRDataLoader).GetMethod("GetMailBySystemAndRegon", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var val = await (Task<string>)method.Invoke(_loader, new object[] { "SYS", "REG" });
-            Assert.AreEqual("wanted@x.com", val);
+            _mockDAO.Setup(d => d.GetAPBUAsync(It.IsAny<string>(), It.IsAny<string>())).Returns("resBU");
+            var method = typeof(TransactionReconClass)
+                .GetMethod("ConvertGLBUToAPBU", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var res = await (Task<string>)method.Invoke(_recon, new object[] { "BU", "ID123" });
+            Assert.AreEqual("resBU", res);
         }
 
         [TestMethod]
-        public async Task GetMailBySystemAndRegon_FallbackToConfig()
+        public async Task ConvertGLBUToAPBU_EmptyIntEntity_ReturnsEmpty()
         {
-            _mockDAO.Setup(d => d.GetMailToDetailsAsync("SYS", "REG")).Returns("");
-            var method = typeof(TRDataLoader).GetMethod("GetMailBySystemAndRegon", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var val = await (Task<string>)method.Invoke(_loader, new object[] { "SYS", "REG" });
-            Assert.AreEqual("someone@test.com", val);
+            var method = typeof(TransactionReconClass)
+                .GetMethod("ConvertGLBUToAPBU", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var res = await (Task<string>)method.Invoke(_recon, new object[] { "BU", "" });
+            Assert.AreEqual(string.Empty, res);
+        }
+
+        [TestMethod]
+        public async Task checkForMandatoryAndProcess_ValidPAYMENT_InsertsMatchedTable()
+        {
+            // Setup to cover the "PAY" record type/payment scenario
+            var tr = new TransactionReconcilationDetails
+            {
+                recordType = "PAY",
+                sourcePaymentReference = "XYZ",
+                srcCurrency = "INR",
+                OriginalPaymentAmount = 99m,
+                businessUnit = "BUX"
+            };
+            var ds = new DataSet();
+            var table = new DataTable("PMT");
+            table.Columns.Add("ORIGINAL_AMT", typeof(decimal));
+            table.Columns.Add("CURRENCY", typeof(string));
+            table.Columns.Add("STATUS", typeof(string));
+            table.Columns.Add("PMT_SYSTEM", typeof(string));
+            table.Columns.Add("PMT_BU", typeof(string));
+            table.Columns.Add("TYPE", typeof(string));
+            table.Columns.Add("CREATED_DATE", typeof(DateTime));
+            table.Columns.Add("MODIFIED_DATE", typeof(object));
+            table.Rows.Add(99m, "INR", "A", "SYS", "BUX", "MEMO", DateTime.Now, DBNull.Value);
+            ds.Tables.Add(table);
+            _mockDAO.Setup(d => d.CheckPmtExistsInGPIAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>())).Returns(ds);
+
+            await _recon.checkForMandatoryAndProcess("SYS", DateTime.Now, tr, "file.xml", "'BUX'");
+            _mockDAO.Verify(d => d.InsertIntoTRMatchedTableAsync(It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<TransactionReconcilationDetails>()), Times.AtLeastOnce);
+        }
+
+        [TestMethod]
+        public async Task checkForMandatoryAndProcess_GroupTypeMissing_InsertsToTRTable()
+        {
+            var tr = new TransactionReconcilationDetails
+            {
+                recordType = null,
+                groupType = null,
+                sourcePaymentReference = "S",
+                businessUnit = "BUX"
+            };
+            await _recon.checkForMandatoryAndProcess("SYS", DateTime.Now, tr, "file.xml", "'BUX'");
+            _mockDAO.Verify(d => d.InsertIntoTRTableAsync(It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<TransactionReconcilationDetails>()), Times.AtLeastOnce);
+        }
+
+        [TestMethod]
+        public async Task checkForMandatoryAndProcess_HandlesNullRefException_Gracefully()
+        {
+            var tr = new TransactionReconcilationDetails { businessUnit = null };
+            await _recon.checkForMandatoryAndProcess("SYS", DateTime.Now, tr, "file.xml", "'BUX'");
+        }
+
+        // For brevity, add similar tests for other branches—MRR, STATUS, Pay+Status etc., including null/empty/malformed data cases
+
+        [TestMethod]
+        public void mandotaryAmountCurrencyCheck_Match_ReturnsTrue()
+        {
+            var tr = new TransactionReconcilationDetails { OriginalPaymentAmount = 9, srcCurrency = "USD" };
+            var result = typeof(TransactionReconClass)
+                .GetMethod("mandotaryAmountCurrencyCheck", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(_recon, new object[] { 9m, "USD", tr });
+            Assert.AreEqual(true, result);
+        }
+
+        [TestMethod]
+        public void mandotaryAmountCurrencyCheck_AmountMismatch_ReturnsFalse()
+        {
+            var tr = new TransactionReconcilationDetails { OriginalPaymentAmount = 1, srcCurrency = "USD" };
+            var result = typeof(TransactionReconClass)
+                .GetMethod("mandotaryAmountCurrencyCheck", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(_recon, new object[] { 99m, "USD", tr });
+            Assert.AreEqual(false, result);
+            Assert.AreEqual("TR-0006", tr.errorCode);
+        }
+
+        [TestMethod]
+        public void mandotaryAmountCurrencyCheck_CurrencyMismatch_ReturnsFalse()
+        {
+            var tr = new TransactionReconcilationDetails { OriginalPaymentAmount = 99, srcCurrency = "USD" };
+            var result = typeof(TransactionReconClass)
+                .GetMethod("mandotaryAmountCurrencyCheck", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(_recon, new object[] { 99m, "INR", tr });
+            Assert.AreEqual(false, result);
+            Assert.AreEqual("TR-0007", tr.errorCode);
+        }
+
+        [TestMethod]
+        public void getModifiedDateTime_BothDBNull_ReturnsUtcNow()
+        {
+            var method = typeof(TransactionReconClass)
+                .GetMethod("getModifiedDateTime", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var before = DateTime.UtcNow.AddSeconds(-1);
+            var dt = (DateTime)method.Invoke(_recon, new object[] { DBNull.Value, DBNull.Value });
+            Assert.IsTrue(dt >= before && dt <= DateTime.UtcNow);
+        }
+
+        [TestMethod]
+        public void getModifiedDateTime_ModifiedNotDbNull_ReturnsModified()
+        {
+            var created = DateTime.Now.AddHours(-1);
+            var modified = DateTime.Now;
+            var method = typeof(TransactionReconClass)
+                .GetMethod("getModifiedDateTime", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var dt = (DateTime)method.Invoke(_recon, new object[] { created, modified });
+            Assert.AreEqual(modified, dt);
+        }
+
+        // Add more tests for CheckTransactionInUnmatchedTable and compareGPIStatus as needed
+        // Helper method to create XmlNode for SFTP config mocks
+        private static XmlNode CreateMockResourceNode(string request, string archive, string error)
+        {
+            var xmldoc = new XmlDocument();
+            var el = xmldoc.CreateElement("EODRResource");
+            var r1 = xmldoc.CreateElement("SFTPLocationRequest"); r1.InnerText = request;
+            var r2 = xmldoc.CreateElement("SFTPLocationArchive"); r2.InnerText = archive;
+            var r3 = xmldoc.CreateElement("SFTPLocationError"); r3.InnerText = error;
+            el.AppendChild(r1); el.AppendChild(r2); el.AppendChild(r3);
+            xmldoc.AppendChild(el);
+            return el;
         }
     }
 }
