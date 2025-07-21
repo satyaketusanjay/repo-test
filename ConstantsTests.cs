@@ -1,132 +1,241 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
-using System.IO;
-using System.Text;
-using System.Xml;
-using System.Linq;
 using System.Collections.Generic;
-using Moq;
+using System.Data;
+using System.Linq;
 using GPI.TransactionRecon.BusinessLogic;
-using GPI.TransactionRecon.BusinessLogic.Contracts;
-using GPI.TransactionRecon.Logger.Contracts;
 
 namespace GPI.TransactionRecon.BusinessLogic.Tests
 {
     [TestClass]
-    public class TRSFTPTests
+    public class TRCommonTests
     {
-        private Mock<IAppConfiguration> _mockConfig;
-        private Mock<ILoggerService> _mockLogger;
-        private Mock<IEmailService> _mockMail;
-        private string _testDir;
+        private TRCommon _common;
 
         [TestInitialize]
         public void Setup()
         {
-            _mockConfig = new Mock<IAppConfiguration>();
-            _mockLogger = new Mock<ILoggerService>();
-            _mockMail = new Mock<IEmailService>();
-
-            // Create a temporary directory for test files
-            _testDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
-            Directory.CreateDirectory(_testDir);
-
-            _mockConfig.Setup(c => c.TRResourcePath).Returns(_testDir);
-            _mockConfig.Setup(c => c.GPI_Systems).Returns("sysA");
-            _mockConfig.Setup(c => c.AcceptableFileFormats).Returns(".xml");
-
-            // Setup any other required config methods as needed
+            _common = new TRCommon();
         }
 
-        [TestCleanup]
-        public void Cleanup()
-        {
-            if (Directory.Exists(_testDir))
-                Directory.Delete(_testDir, true);
-        }
+        // getGPITransactonObject Tests
 
         [TestMethod]
-        public void Constructor_InitializesSFTPRetryData()
+        public void getGPITransactonObject_Returns_ExpectedObject_AllFields()
         {
-            var sftp = new TRSFTP(_mockConfig.Object, _mockLogger.Object, _mockMail.Object);
-            // No exception means pass for basic initialization
-        }
-
-        [TestMethod]
-        public void LoadResourceXml_Returns_Null_For_InvalidPath()
-        {
-            var sftp = new TRSFTP(_mockConfig.Object, _mockLogger.Object, _mockMail.Object);
-            var node = sftp.LoadResourceXml("nonexistent.xml");
-            Assert.IsNull(node);
-        }
-
-        [TestMethod]
-        public void LoadResourceXml_Returns_Node_For_ValidXml()
-        {
-            string xmlPath = Path.Combine(_testDir, "resource.xml");
-            File.WriteAllText(xmlPath, @"<EODRResource>
-                <SFTPHostName>host</SFTPHostName>
-                <SFTPServerRequest>remote</SFTPServerRequest>
-                <SFTPPort>22</SFTPPort>
-                <SshPrivateKeyPath>key</SshPrivateKeyPath>
-                <SFTPLocationRequest>dest</SFTPLocationRequest>
-            </EODRResource>");
-            var sftp = new TRSFTP(_mockConfig.Object, _mockLogger.Object, _mockMail.Object);
-            var node = sftp.LoadResourceXml(xmlPath);
-            Assert.IsNotNull(node);
-            Assert.AreEqual("host", node["SFTPHostName"].InnerText);
-        }
-
-        [TestMethod]
-        public void GetFileEncoding_Returns_UTF8_ByDefault()
-        {
-            string path = Path.Combine(_testDir, "test.txt");
-            File.WriteAllText(path, "plain text");
-            var sftp = new TRSFTP(_mockConfig.Object, _mockLogger.Object, _mockMail.Object);
-            var encoding = typeof(TRSFTP).GetMethod("GetFileEncoding", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var result = encoding.Invoke(sftp, new object[] { path });
-            Assert.AreEqual(Encoding.UTF8, result);
-        }
-
-        [TestMethod]
-        public void SftpExistDwownload_Does_Not_Throw_On_Empty_Dir()
-        {
-            var sftp = new TRSFTP(_mockConfig.Object, _mockLogger.Object, _mockMail.Object);
-            sftp.SftpExistDwownload();
-        }
-
-        [TestMethod]
-        public void DirectoryListing_Returns_Empty_When_Invalid_Path()
-        {
-            var sftp = new TRSFTP(_mockConfig.Object, _mockLogger.Object, _mockMail.Object);
-            var result = sftp.DirectoryListing("notahost", "/invalid", "user", "pass", "22", "key", "/", "sysA");
+            var result = _common.getGPITransactonObject("sys","bu","acc","INR","ref",1000.1m,500.5m,"user","C","qual","COMP","ASIA",DateTime.Now,DateTime.Now,"uniqueID");
             Assert.IsNotNull(result);
+            Assert.AreEqual("bu", result.businessUnit);
+            Assert.AreEqual("ref", result.sourcePaymentReference);
+            Assert.AreEqual(500.5m, result.AccountingAmount);
+            Assert.AreEqual("COMP", result.statusGPI);
+            Assert.AreEqual("uniqueID", result.uniquePaymentID);
+            Assert.IsNotNull(result.trDateTime);
+            Assert.IsNotNull(result.gpiModifiedTime);
         }
 
         [TestMethod]
-        public void transferToSFTP_Does_Not_Throw_On_Empty_ResponsePath()
+        public void getGPITransactonObject_ModifiedDateDBNull_UsesCreatedDate()
         {
-            var sftp = new TRSFTP(_mockConfig.Object, _mockLogger.Object, _mockMail.Object);
-            sftp.transferToSFTP("host", "22", "key", "user", "pw", "", "reply", "body", "/dest/");
+            var createdDate = DateTime.Now.AddHours(-1);
+            var result = _common.getGPITransactonObject("sys","bu","acc","USD","ref",10m,20m,"c","V","q","COMP","NA",createdDate,DBNull.Value,"id");
+            Assert.AreEqual(createdDate, result.gpiModifiedTime);
         }
 
         [TestMethod]
-        public void transferToSFTP_Saves_Local_And_SFTP_DoesNotThrow()
+        public void getGPITransactonObject_ModifiedDateDBNull_CreatedDateDBNull_DefaultsToUtcNow()
         {
-            string localResponseDir = _testDir;
-            var sftp = new TRSFTP(_mockConfig.Object, _mockLogger.Object, _mockMail.Object);
-            sftp.transferToSFTP("localhost", "22", "key", "user", "", localResponseDir, "filename", "somecontent", localResponseDir);
-            string expectedPath = Path.Combine(localResponseDir, "filename.csv");
-            Assert.IsTrue(File.Exists(expectedPath));
+            var before = DateTime.UtcNow.AddSeconds(-1);
+            var result = _common.getGPITransactonObject("sys","bu","acc","USD","ref",10m,20m,"c","F","q","OK","EU",DBNull.Value,DBNull.Value,"id");
+            Assert.IsTrue(result.gpiModifiedTime >= before && result.gpiModifiedTime <= DateTime.UtcNow);
         }
 
         [TestMethod]
-        public void SFTPExceptionHandler_Null_RetryData()
+        public void getGPITransactonObject_Exception_Returns_Null()
         {
-            var sftp = new TRSFTP(_mockConfig.Object, _mockLogger.Object, _mockMail.Object);
-            var method = typeof(TRSFTP).GetMethod("SFTPExceptionHandler", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            method.Invoke(sftp, new object[] { null, new Exception("err"), "host", "/r" });
-            // Pass if no exception
+            // Simulates Cast exception by passing an invalid value
+            var result = _common.getGPITransactonObject("sys","bu","acc","USD","ref",10m,20m,"c","G","q","OK","EU","wrongType","wrongType","id");
+            Assert.IsNull(result);
+        }
+
+        // getFileName Tests
+
+        [TestMethod]
+        public void getFileName_Valid_ReturnsFormattedName()
+        {
+            string input = "FUND_SYS_ACC_CURR_FILENAME";
+            string result = _common.getFileName(input);
+            Assert.IsTrue(result.StartsWith("FUND_SYS_ACC_CURR_"));
+        }
+
+        [TestMethod]
+        public void getFileName_EmptyInput_ReturnsEmpty()
+        {
+            Assert.AreEqual("", _common.getFileName(""));
+        }
+
+        // formResponseString Tests
+
+        [TestMethod]
+        public void formResponseString_ValidDataTable_ReturnsExpectedString()
+        {
+            DataTable dt = new DataTable();
+            dt.Columns.AddRange(new[] {
+                new DataColumn("RECONCILIATION DATE"),
+                new DataColumn("SYSTEM"),
+                new DataColumn("BU"),
+                new DataColumn("SOURCEPAYMENTREFERENCE"),
+                new DataColumn("LEDGER_ACCOUNT"),
+                new DataColumn("CURRENCY"),
+                new DataColumn("RECORD_TYPE"),
+                new DataColumn("ORIGINAL_AMT"),
+                new DataColumn("ACCOUNTING_AMT"),
+                new DataColumn("CREATED_BY"),
+                new DataColumn("GPI_STATUS"),
+                new DataColumn("FES_STATUS"),
+                new DataColumn("ERROR_CODE"),
+                new DataColumn("ERROR_DESCRIPTION"),
+                new DataColumn("LAST MODIFIED DATE"),
+            });
+            var row = dt.NewRow();
+            row["RECONCILIATION DATE"] = "2025-07-21";
+            row["SYSTEM"] = "GPI";
+            row["BU"] = "BUX";
+            row["SOURCEPAYMENTREFERENCE"] = "ref123";
+            row["LEDGER_ACCOUNT"] = "1234";
+            row["CURRENCY"] = "INR";
+            row["RECORD_TYPE"] = "PAY";
+            row["ORIGINAL_AMT"] = 10;
+            row["ACCOUNTING_AMT"] = 5;
+            row["CREATED_BY"] = "userA";
+            row["GPI_STATUS"] = "COMPLETE";
+            row["FES_STATUS"] = "";
+            row["ERROR_CODE"] = "";
+            row["ERROR_DESCRIPTION"] = "";
+            row["LAST MODIFIED DATE"] = "2025-07-21 12:00";
+            dt.Rows.Add(row);
+
+            var str = _common.formResponseString(dt);
+            Assert.IsTrue(str.Contains("ref123"));
+            Assert.IsTrue(str.EndsWith(Environment.NewLine));
+        }
+
+        [TestMethod]
+        public void formResponseString_EmptyTable_ReturnsEmptyString()
+        {
+            var dt = new DataTable();
+            var str = _common.formResponseString(dt);
+            Assert.AreEqual(string.Empty, str);
+        }
+
+        [TestMethod]
+        public void formResponseString_DataWithCommas_QuotesField()
+        {
+            DataTable dt = new DataTable();
+            dt.Columns.Add("RECONCILIATION DATE");
+            dt.Columns.Add("SYSTEM");
+            dt.Columns.Add("BU");
+            dt.Columns.Add("SOURCEPAYMENTREFERENCE");
+            dt.Columns.Add("LEDGER_ACCOUNT");
+            dt.Columns.Add("CURRENCY");
+            dt.Columns.Add("RECORD_TYPE");
+            dt.Columns.Add("ORIGINAL_AMT");
+            dt.Columns.Add("ACCOUNTING_AMT");
+            dt.Columns.Add("CREATED_BY");
+            dt.Columns.Add("GPI_STATUS");
+            dt.Columns.Add("FES_STATUS");
+            dt.Columns.Add("ERROR_CODE");
+            dt.Columns.Add("ERROR_DESCRIPTION");
+            dt.Columns.Add("LAST MODIFIED DATE");
+            var row = dt.NewRow();
+            row["RECONCILIATION DATE"] = "2025-07,21";
+            dt.Rows.Add(row);
+
+            var str = _common.formResponseString(dt);
+            Assert.IsTrue(str.Contains("\"2025-07,21\""));
+        }
+
+        // getSqlsearchString Tests
+
+        [TestMethod]
+        public void getSqlsearchString_RemovesEmptyItems_BuildsExpectedQuery()
+        {
+            var items = new List<string> { "COMPLETE", "FAILED", "", "PENDING" };
+            var result = _common.getSqlsearchString(items);
+            Assert.AreEqual("'COMPLETE','FAILED','PENDING'", result);
+        }
+
+        [TestMethod]
+        public void getSqlsearchString_EmptyList_ReturnsEmptyString()
+        {
+            var result = _common.getSqlsearchString(new List<string>());
+            Assert.AreEqual(string.Empty, result);
+        }
+
+        // addRecordType Tests
+
+        [TestMethod]
+        public void addRecordType_GroupTypeC_SetsPAY()
+        {
+            var t = new TransactionReconcilationDetails { groupType = "C", qualifier = "qual" };
+            var result = _common.addRecordType(t);
+            Assert.AreEqual("PAY", result.recordType);
+        }
+
+        [TestMethod]
+        public void addRecordType_GroupTypeF_SetsPAY()
+        {
+            var t = new TransactionReconcilationDetails { groupType = "F" };
+            var result = _common.addRecordType(t);
+            Assert.AreEqual("PAY", result.recordType);
+        }
+
+        [TestMethod]
+        public void addRecordType_GroupTypeV_SetsMRR()
+        {
+            var t = new TransactionReconcilationDetails { groupType = "V" };
+            var result = _common.addRecordType(t);
+            Assert.AreEqual("MRR", result.recordType);
+        }
+
+        [TestMethod]
+        public void addRecordType_GroupTypeOther_NullRecordType()
+        {
+            var t = new TransactionReconcilationDetails { groupType = "X" };
+            var result = _common.addRecordType(t);
+            Assert.IsNull(result.recordType);
+        }
+
+        [TestMethod]
+        public void addRecordType_CatchesException_ReturnsSame()
+        {
+            var t = new TransactionReconcilationDetails();
+            t.groupType = null;
+            var result = _common.addRecordType(t);
+            Assert.AreSame(t, result);
+        }
+
+        // getSqlsearch Tests
+
+        [TestMethod]
+        public void getSqlsearch_ValidString_ReturnsCommaSeparatedQuoted()
+        {
+            var result = _common.getSqlsearch("A,B,C");
+            Assert.AreEqual("'A','B','C'", result);
+        }
+
+        [TestMethod]
+        public void getSqlsearch_SingleValue_ReturnsSingleQuoted()
+        {
+            var result = _common.getSqlsearch("SINGLE");
+            Assert.AreEqual("'SINGLE'", result);
+        }
+
+        [TestMethod]
+        public void getSqlsearch_EmptyString_ReturnsEmptyQuotes()
+        {
+            var result = _common.getSqlsearch("");
+            Assert.AreEqual("''", result);
         }
     }
 }
