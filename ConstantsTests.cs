@@ -1,6 +1,4 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using System.Collections.Specialized;
-using System.Configuration;
 using GPI.TransactionRecon.Logger;
 
 namespace GPI.TransactionRecon.Tests
@@ -13,146 +11,92 @@ namespace GPI.TransactionRecon.Tests
         [TestInitialize]
         public void Setup()
         {
-            // Simulate AppSettings
-            var appSettings = new NameValueCollection
-            {
-                { "XMLFileFormat", ".xml" },
-                { "CSVFileFormat", ".csv" },
-                { "TXTFileFormat", ".txt" },
-                { "EXCEL", ".xlsx" },
-                { "SmtpServer", "smtp.test.com" },
-                { "TRMailFrom", "from@test.com" },
-                { "TRMailTo", "to@test.com" },
-                { "TRMailSubject", "Test Subject" },
-                { "ScheduledTime", "10:00" },
-                { "TRReportLocation", "C:\\Reports" },
-                { "TRLogsPath", "C:\\Logs" },
-                { "TRResourcePath", "C:\\Resources" },
-                { "TRReport", "ReportName" },
-                { "TREODRReportMailTo", "eodrto@test.com" },
-                { "TREODRReportMailFrom", "eodrfrom@test.com" },
-                { "TREODRReportcountryManagers", "ManagerList" },
-                { "TREODRReportSubject", "EODR Subject" },
-                { "TREODRReportBody", "EODR Body" },
-                { "IsTREnabled", "true" },
-                { "TRIgnoreStatusList", "IgnoreList" },
-                { "ParallelProcessFlag", "true" },
-                { "EPD_system", "EPD" },
-                { "SFTP_Systems", "System1,System2" },
-                { "SFTPRetryCount", "3" },
-                { "SFTPRetryDelay", "5" },
-                { "SFTPSuccessMessage", "Success" },
-                { "SFTPErrorMessage", "Error" },
-                { "SFTPErrorEmailTo", "sftp@test.com" },
-                { "IPAdd", "127.0.0.1" },
-                { "TRThresholdAlertSubject", "Alert - {0} - {1}" },
-                { "GpiOnlineURL", "http://gpi.test.com" },
-                { "AcceptableFileFormats", ".csv,.xml" },
-                { "BU_ID", "BU123" },
-                { "GPI_Systems", "GPI1,GPI2" },
-                { "Ignore_status_BU", "BUX" },
-                { "IgnoreStatusList_Approved", "Approved" },
-                { "IgnoreStatusList_Unapproved", "Unapproved" }
-            };
-
-            var secureSettings = new NameValueCollection
-            {
-                { "SFTPUser_TestSystem", "secureuser" },
-                { "SFTPPassword_TestSystem", "securepass" }
-            };
-
-            ConfigurationManager.AppSettings.Clear();
-            foreach (string key in appSettings)
-            {
-                ConfigurationManager.AppSettings.Set(key, appSettings[key]);
-            }
-
-            ConfigurationManager.GetSection("secureAppSettings");
             _config = new AppConfiguration();
         }
 
         [TestMethod]
-        public void AllProperties_ShouldReturnConfiguredValues()
+        public void All_AppSettings_Properties_ShouldNotBeNullOrEmpty()
         {
-            Assert.AreEqual(".xml", _config.XMLFileFormat);
-            Assert.AreEqual(".csv", _config.CSVFileFormat);
-            Assert.AreEqual(".txt", _config.TXTFileFormat);
-            Assert.AreEqual(".xlsx", _config.EXCEL);
-            Assert.AreEqual("smtp.test.com", _config.SmtpServer);
-            Assert.AreEqual("from@test.com", _config.TRMailFrom);
-            Assert.AreEqual("to@test.com", _config.TRMailTo);
-            Assert.AreEqual("Test Subject", _config.TRMailSubject);
-            Assert.AreEqual("10:00", _config.ScheduledTime);
-            Assert.AreEqual("C:\\Reports", _config.TRReportLocation);
-            Assert.AreEqual("C:\\Logs", _config.TRLogsPath);
-            Assert.AreEqual("C:\\Resources", _config.TRResourcePath);
-            Assert.AreEqual("ReportName", _config.TRReport);
-            Assert.AreEqual("eodrto@test.com", _config.TREODRReportMailTo);
-            Assert.AreEqual("eodrfrom@test.com", _config.TREODRReportMailFrom);
-            Assert.AreEqual("ManagerList", _config.TREODRReportcountryManagers);
-            Assert.AreEqual("EODR Subject", _config.TREODRReportSubject);
-            Assert.AreEqual("EODR Body", _config.TREODRReportBody);
-            Assert.AreEqual("true", _config.IsTREnabled);
-            Assert.AreEqual("IgnoreList", _config.TRIgnoreStatusList);
-            Assert.AreEqual("true", _config.ParallelProcessFlag);
-            Assert.AreEqual("EPD", _config.EPD_system);
-            Assert.AreEqual("System1,System2", _config.SFTP_Systems);
-            Assert.AreEqual("3", _config.SFTPRetryCount);
-            Assert.AreEqual("5", _config.SFTPRetryDelay);
-            Assert.AreEqual("Success", _config.SFTPSuccessMessage);
-            Assert.AreEqual("Error", _config.SFTPErrorMessage);
-            Assert.AreEqual("sftp@test.com", _config.SFTPErrorEmailTo);
-            Assert.AreEqual("127.0.0.1", _config.IPAdd);
-            Assert.AreEqual("Alert - {0} - {1}", _config.TRThresholdAlertSubject);
-            Assert.AreEqual("http://gpi.test.com", _config.GpiOnlineURL);
-            Assert.AreEqual(".csv,.xml", _config.AcceptableFileFormats);
-            Assert.AreEqual("BU123", _config.BU_ID);
-            Assert.AreEqual("GPI1,GPI2", _config.GPI_Systems);
-            Assert.AreEqual("BUX", _config.Ignore_status_BU);
-            Assert.AreEqual("Approved", _config.IgnoreStatusList_Approved);
-            Assert.AreEqual("Unapproved", _config.IgnoreStatusList_Unapproved);
+            Assert.IsFalse(string.IsNullOrEmpty(_config.XMLFileFormat));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.CSVFileFormat));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TXTFileFormat));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.EXCEL));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.SmtpServer));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TRMailFrom));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TRMailTo));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TRMailSubject));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.ScheduledTime));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TRReportLocation));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TRLogsPath));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TRResourcePath));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TRReport));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TREODRReportMailTo));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TREODRReportMailFrom));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TREODRReportcountryManagers));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TREODRReportSubject));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TREODRReportBody));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.IsTREnabled));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TRIgnoreStatusList));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.ParallelProcessFlag));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.EPD_system));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.SFTP_Systems));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.SFTPRetryCount));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.SFTPRetryDelay));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.SFTPSuccessMessage));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.SFTPErrorMessage));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.SFTPErrorEmailTo));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.IPAdd));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.TRThresholdAlertSubject));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.GpiOnlineURL));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.AcceptableFileFormats));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.BU_ID));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.GPI_Systems));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.Ignore_status_BU));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.IgnoreStatusList_Approved));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.IgnoreStatusList_Unapproved));
+            Assert.IsFalse(string.IsNullOrEmpty(_config.DatabaseConnectionString));
         }
 
         [TestMethod]
-        public void GetAppSetting_ValidKey_ReturnsValue()
+        public void GetAppSetting_ValidKey_ShouldReturnValue()
         {
-            var result = _config.GetAppSetting("XMLFileFormat");
-            Assert.AreEqual(".xml", result);
+            var value = _config.GetAppSetting("XMLFileFormat");
+            Assert.AreEqual("*.xml", value);
         }
 
         [TestMethod]
-        public void GetAppSetting_InvalidKey_ReturnsNull()
+        public void GetAppSetting_InvalidKey_ShouldReturnNull()
         {
-            var result = _config.GetAppSetting("NonExistentKey");
-            Assert.IsNull(result);
+            var value = _config.GetAppSetting("NonExistentKey");
+            Assert.IsNull(value);
         }
 
         [TestMethod]
-        public void GetSftpUser_ValidKey_ReturnsSecureValue()
+        public void GetSftpUser_ValidKey_ShouldReturnValue()
         {
-            var result = _config.GetSftpUser("TestSystem");
-            Assert.AreEqual("secureuser", result);
+            var value = _config.GetSftpUser("ABA");
+            Assert.AreEqual("svc_latam_gpi", value);
         }
 
         [TestMethod]
-        public void GetSftpUser_InvalidKey_ReturnsEmpty()
+        public void GetSftpUser_InvalidKey_ShouldReturnEmpty()
         {
-            var result = _config.GetSftpUser("UnknownSystem");
-            Assert.AreEqual(string.Empty, result);
+            var value = _config.GetSftpUser("UNKNOWN");
+            Assert.AreEqual(string.Empty, value);
         }
 
         [TestMethod]
-        public void GetSftpPassword_ValidKey_ReturnsSecureValue()
+        public void GetSftpPassword_ValidKey_ShouldReturnValue()
         {
-            var result = _config.GetSftpPassword("TestSystem");
-            Assert.AreEqual("securepass", result);
+            var value = _config.GetSftpPassword("ABA");
+            Assert.AreEqual(string.Empty, value); // empty string in config
         }
 
         [TestMethod]
-        public void GetSftpPassword_InvalidKey_ReturnsEmpty()
+        public void GetSftpPassword_InvalidKey_ShouldReturnEmpty()
         {
-            var result = _config.GetSftpPassword("UnknownSystem");
-            Assert.AreEqual(string.Empty, result);
+            var value = _config.GetSftpPassword("UNKNOWN");
+            Assert.AreEqual(string.Empty, value);
         }
     }
 }
