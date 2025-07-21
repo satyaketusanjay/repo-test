@@ -1,8 +1,6 @@
 using System;
-using System.Collections.Specialized;
 using System.Configuration;
 using System.Linq;
-using System.Reflection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using GPI.TransactionRecon.Logger;
 
@@ -14,82 +12,120 @@ namespace GPI.TransactionRecon.Tests
         private AppConfiguration _config;
 
         [TestInitialize]
-        public void TestInitialize()
+        public void Arrange()
         {
-            // Instantiate the class under test
             _config = new AppConfiguration();
         }
 
-        [TestMethod]
-        public void All_AppSettings_Properties_Should_Map_To_ConfigValues()
-        {
-            // Find all public string properties declared in AppConfiguration (excluding DatabaseConnectionString)
-            var props = typeof(AppConfiguration)
-                        .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                        .Where(p => p.PropertyType == typeof(string) 
-                                 && p.Name != nameof(AppConfiguration.DatabaseConnectionString));
-
-            foreach (var prop in props)
-            {
-                // Expected value from App.config
-                string expected = ConfigurationManager.AppSettings[prop.Name];
-                
-                // Actual from property getter
-                string actual = (string)prop.GetValue(_config);
-                
-                Assert.AreEqual(
-                    expected,
-                    actual,
-                    $"Property '{prop.Name}' did not return the expected value."
-                );
-            }
-        }
+        // 1) Individual property tests
 
         [TestMethod]
-        public void DatabaseConnectionString_Should_Return_QADB_ConnectionString()
+        public void XMLFileFormat_WhenKeyExists_ReturnsExpectedValue()
         {
-            var connString = _config.DatabaseConnectionString;
-            Assert.IsNotNull(connString, "DatabaseConnectionString should not be null.");
-            Assert.IsTrue(
-                connString.Contains("Initial Catalog=TestDB"),
-                "Connection string did not contain the expected database name."
-            );
-        }
-
-        [TestMethod]
-        public void GetAppSetting_Should_Return_SpecificValue()
-        {
-            // Pick one known key
-            string expected = ConfigurationManager.AppSettings["TRMailSubject"];
-            string actual = _config.GetAppSetting("TRMailSubject");
+            var expected = ConfigurationManager.AppSettings["XMLFileFormat"];
+            var actual   = _config.XMLFileFormat;
             Assert.AreEqual(expected, actual);
         }
 
         [TestMethod]
-        public void GetSftpUser_Should_Return_Value_When_Key_Present()
+        public void DatabaseConnectionString_WhenExists_ReturnsQADBConnectionString()
         {
-            string actual = _config.GetSftpUser("TestSystem");
+            var expected = ConfigurationManager.ConnectionStrings["QADB"].ConnectionString;
+            var actual   = _config.DatabaseConnectionString;
+            StringAssert.Contains(actual, expected);
+        }
+
+        // 2) Data-driven for the rest of simple string properties
+
+        [DataTestMethod]
+        [DataRow("CSVFileFormat")]
+        [DataRow("TXTFileFormat")]
+        [DataRow("EXCEL")]
+        [DataRow("SmtpServer")]
+        [DataRow("TRMailFrom")]
+        [DataRow("TRMailTo")]
+        [DataRow("TRMailSubject")]
+        [DataRow("ScheduledTime")]
+        [DataRow("TRReportLocation")]
+        [DataRow("TRLogsPath")]
+        [DataRow("TRResourcePath")]
+        [DataRow("TRReport")]
+        [DataRow("TREODRReportMailTo")]
+        [DataRow("TREODRReportMailFrom")]
+        [DataRow("TREODRReportcountryManagers")]
+        [DataRow("TREODRReportSubject")]
+        [DataRow("TREODRReportBody")]
+        [DataRow("IsTREnabled")]
+        [DataRow("TRIgnoreStatusList")]
+        [DataRow("ParallelProcessFlag")]
+        [DataRow("EPD_system")]
+        [DataRow("SFTP_Systems")]
+        [DataRow("SFTPRetryCount")]
+        [DataRow("SFTPRetryDelay")]
+        [DataRow("SFTPSuccessMessage")]
+        [DataRow("SFTPErrorMessage")]
+        [DataRow("SFTPErrorEmailTo")]
+        [DataRow("IPAdd")]
+        [DataRow("TRThresholdAlertSubject")]
+        [DataRow("GpiOnlineURL")]
+        [DataRow("AcceptableFileFormats")]
+        [DataRow("BU_ID")]
+        [DataRow("GPI_Systems")]
+        [DataRow("Ignore_status_BU")]
+        [DataRow("IgnoreStatusList_Approved")]
+        [DataRow("IgnoreStatusList_Unapproved")]
+        public void Property_WhenKeyExists_ReturnsAppSetting(string key)
+        {
+            var prop     = typeof(AppConfiguration).GetProperty(key);
+            var expected = ConfigurationManager.AppSettings[key];
+            var actual   = (string)prop.GetValue(_config);
+            Assert.AreEqual(expected, actual, $"{key} mismatch");
+        }
+
+        // 3) GetAppSetting helper
+
+        [TestMethod]
+        public void GetAppSetting_WhenExists_ReturnsValue()
+        {
+            var expected = ConfigurationManager.AppSettings["TRMailSubject"];
+            var actual   = _config.GetAppSetting("TRMailSubject");
+            Assert.AreEqual(expected, actual);
+        }
+
+        [TestMethod]
+        public void GetAppSetting_WhenMissing_ReturnsNull()
+        {
+            var actual = _config.GetAppSetting("NoSuchKey");
+            Assert.IsNull(actual);
+        }
+
+        // 4) secureAppSettings helpers
+
+        [TestMethod]
+        public void GetSftpUser_WhenPresent_ReturnsUser()
+        {
+            var actual = _config.GetSftpUser("TestSystem");
             Assert.AreEqual("TestUser", actual);
         }
 
         [TestMethod]
-        public void GetSftpPassword_Should_Return_Value_When_Key_Present()
+        public void GetSftpUser_WhenMissing_ReturnsEmpty()
         {
-            string actual = _config.GetSftpPassword("TestSystem");
-            Assert.AreEqual("TestPass", actual);
-        }
-
-        [TestMethod]
-        public void GetSftpUser_Should_Return_Empty_When_Key_Missing()
-        {
-            string actual = _config.GetSftpUser("UnknownSystem");
+            var actual = _config.GetSftpUser("Unknown");
             Assert.AreEqual(string.Empty, actual);
         }
 
         [TestMethod]
-        public void GetSftpPassword_Should_Return_Empty_When_Key_Missing()
+        public void GetSftpPassword_WhenPresent_ReturnsPassword()
         {
-            string actual = _config.GetSftpPassword("UnknownSystem");
+            var actual = _config.GetSftpPassword("TestSystem");
+            Assert.AreEqual("TestPass", actual);
+        }
+
+        [TestMethod]
+        public void GetSftpPassword_WhenMissing_ReturnsEmpty()
+        {
+            var actual = _config.GetSftpPassword("Unknown");
             Assert.AreEqual(string.Empty, actual);
         }
     }
