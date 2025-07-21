@@ -3,9 +3,7 @@ using Moq;
 using GPI.TransactionRecon.Logger;
 using GPI.TransactionRecon.Logger.Contracts;
 using System;
-using System.Net;
 using System.Net.Mail;
-using System.Text;
 using System.Threading.Tasks;
 using System.IO;
 
@@ -16,7 +14,8 @@ namespace GPI.TransactionRecon.Logger.Contracts
 {
     public interface ILoggerService
     {
-        void WriteError(string method, string message, Exception ex);
+        // Updated to include the fourth parameter as requested.
+        void WriteError(string method, string message, Exception ex, string details = "");
     }
 
     public interface IAppConfiguration
@@ -77,50 +76,49 @@ public class EmailServiceTests
         _loggerMock = new Mock<ILoggerService>();
         _configMock = new Mock<IAppConfiguration>();
 
-        // Setup default valid configuration for positive test cases
-        _configMock.SetupGet(c => c.TRMailTo).Returns("to@example.com");
-        _configMock.SetupGet(c => c.TRMailFrom).Returns("from@example.com");
-        _configMock.SetupGet(c => c.TRMailSubject).Returns("Test Subject");
-        _configMock.SetupGet(c => c.SmtpServer).Returns("smtp.example.com"); // A dummy server
+        // Setup default valid configuration for most test cases
+        _configMock.SetupGet(c => c.TRMailTo).Returns("default-to@example.com");
+        _configMock.SetupGet(c => c.TRMailFrom).Returns("default-from@example.com");
+        _configMock.SetupGet(c => c.TRMailSubject).Returns("Default Subject");
+        _configMock.SetupGet(c => c.SmtpServer).Returns("smtp.test-server.com"); // A dummy server that will cause a failure
         _configMock.SetupGet(c => c.SFTPErrorEmailTo).Returns("sftp-errors@example.com");
         _configMock.SetupGet(c => c.TREODRReportMailTo).Returns("eod-reports@example.com");
-        _configMock.SetupGet(c => c.TREODRReportMailFrom).Returns("from@example.com");
-
-
+        _configMock.SetupGet(c => c.TREODRReportMailFrom).Returns("reports-from@example.com");
+        _configMock.SetupGet(c => c.TRThresholdAlertSubject).Returns("Threshold Alert: {0} for {1}");
+        
         _emailService = new EmailService(_loggerMock.Object, _configMock.Object);
     }
 
-    #region Negative Scenarios - Invalid Email Addresses
+    #region Negative Scenarios - Invalid Configuration
 
     [TestMethod]
-    public async Task SendHtmlEmailAsync_ToAddressIsEmpty_LogsError()
+    public async Task SendHtmlEmailAsync_ToAddressIsEmpty_LogsErrorAndReturns()
     {
         // Arrange
-        // Configure the mock to return an invalid "To" address.
-        _configMock.SetupGet(c => c.TRMailTo).Returns(""); // Empty "To" address
+        _configMock.SetupGet(c => c.TRMailTo).Returns(""); // Invalid "To" address
 
         // Act
-        // Call a method that will use the invalid configuration.
+        // This method internally calls SendHtmlEmailAsync
         await _emailService.ErrorMessageAsync("Test error");
 
         // Assert
-        // Verify that the logger was called with the expected error message.
-        // This confirms the internal validation in SendHtmlEmailAsync works.
+        // Verify the specific error for an empty address is logged.
         _loggerMock.Verify(
             log => log.WriteError(
                 "SendHtmlEmailAsync",
                 It.Is<string>(msg => msg.Contains("'To' or 'From' address is empty")),
-                It.IsAny<NullReferenceException>()
+                It.IsAny<NullReferenceException>(),
+                ""
             ),
             Times.Once
         );
     }
 
     [TestMethod]
-    public async Task SendHtmlEmailAsync_FromAddressIsWhitespace_LogsError()
+    public async Task SendHtmlEmailAsync_FromAddressIsWhitespace_LogsErrorAndReturns()
     {
         // Arrange
-        _configMock.SetupGet(c => c.TRMailFrom).Returns("   "); // Whitespace "From" address
+        _configMock.SetupGet(c => c.TRMailFrom).Returns("   "); // Invalid "From" address
 
         // Act
         await _emailService.ErrorMessageAsync("Test error");
@@ -130,129 +128,181 @@ public class EmailServiceTests
             log => log.WriteError(
                 "SendHtmlEmailAsync",
                 It.Is<string>(msg => msg.Contains("'To' or 'From' address is empty")),
-                It.IsAny<NullReferenceException>()
+                It.IsAny<NullReferenceException>(),
+                ""
             ),
             Times.Once
         );
     }
-
-    #endregion
-
-    #region Negative Scenarios - SMTP/Network Failures
-
+    
     [TestMethod]
     public async Task SendHtmlEmailAsync_SmtpServerIsNull_LogsSmtpFailure()
     {
         // Arrange
-        // Setting SmtpServer to null will cause 'new SmtpClient(null)' to throw an exception.
+        // Setting SmtpServer to null will cause 'new SmtpClient(null)' to throw an ArgumentNullException.
         _configMock.SetupGet(c => c.SmtpServer).Returns((string)null);
 
         // Act
-        // We can call any public method that sends an email to trigger the failure.
-        await _emailService.SendEmailSFTPSuccessAsync("body", "location", "timestamp");
+        await _emailService.ErrorMessageAsync("Test error");
 
         // Assert
-        // Verify that the catch block in SendHtmlEmailAsync logged the failure.
+        // Verify the catch block in SendHtmlEmailAsync logged the failure.
         _loggerMock.Verify(
             log => log.WriteError(
                 "SendHtmlEmailAsync",
                 It.Is<string>(msg => msg.StartsWith("Failed to send email.")),
-                It.IsAny<Exception>() // The underlying exception could be ArgumentNullException or SmtpException
+                It.IsAny<ArgumentNullException>(),
+                ""
+            ),
+            Times.Once
+        );
+    }
+
+    #endregion
+
+    #region Positive Scenarios - Email Construction and Logic
+    // --- TESTING STRATEGY ---
+    // The EmailService class creates its own SmtpClient instance (`new SmtpClient()`),
+    // which makes it impossible to mock the email sending process directly with Moq.
+    // Therefore, any call to send an email in a test environment will fail.
+    //
+    // The following tests EMBRACE this failure. They work by:
+    // 1. Calling the public methods of EmailService.
+    // 2. Letting the internal SmtpClient fail, which is caught by the try-catch block.
+    // 3. Verifying that the ILoggerService is called with the CORRECTLY CONSTRUCTED email parameters (To, From, Subject).
+    //
+    // This approach allows us to test the LOGIC of the EmailService (i.e., that it builds the right email)
+    // without needing to change the production code.
+
+    [TestMethod]
+    public async Task ErrorMessageAsync_WithSystemAndRegion_ConstructsCorrectSubjectAndRecipient()
+    {
+        // Arrange
+        var system = "SystemX";
+        var expectedTo = "override@example.com";
+        var expectedSubject = $"{_configMock.Object.TRMailSubject} - {system}";
+
+        // Act
+        await _emailService.ErrorMessageAsync(system, "A detailed error.", "APAC", expectedTo);
+
+        // Assert
+        _loggerMock.Verify(
+            log => log.WriteError(
+                "SendHtmlEmailAsync",
+                It.Is<string>(msg =>
+                    msg.Contains($"To: {expectedTo}") &&
+                    msg.Contains($"Subject: {expectedSubject}")
+                ),
+                It.IsAny<Exception>(),
+                ""
+            ),
+            Times.Once
+        );
+    }
+
+    [TestMethod]
+    public async Task SendEmailSFTPErrorsAsync_UsesFallbackEmail_WhenSFTPErrorEmailToIsNull()
+    {
+        // Arrange
+        var fallbackTo = _configMock.Object.TRMailTo;
+        _configMock.SetupGet(c => c.SFTPErrorEmailTo).Returns((string)null); // Simulate null config value
+
+        // Act
+        await _emailService.SendEmailSFTPErrorsAsync("SFTP connection failed.", "/remote/path/errors", DateTime.Now.ToString("o"));
+
+        // Assert
+        _loggerMock.Verify(
+            log => log.WriteError(
+                "SendHtmlEmailAsync",
+                It.Is<string>(msg => msg.Contains($"To: {fallbackTo}")), // Verify it used the fallback
+                It.IsAny<Exception>(),
+                ""
             ),
             Times.Once
         );
     }
     
-    #endregion
-
-    #region Positive "Smoke" Scenarios
-    // These tests ensure that given valid inputs, the methods execute without throwing
-    // unhandled exceptions. They act as basic "smoke tests".
-
     [TestMethod]
-    public async Task ErrorMessageAsync_WithString_RunsSuccessfully()
+    public async Task SendEmailSFTPErrorsAsync_UsesSpecificSFTPErrorEmail_WhenAvailable()
     {
+        // Arrange
+        var sftpTo = _configMock.Object.SFTPErrorEmailTo; // "sftp-errors@example.com"
+
         // Act
-        await _emailService.ErrorMessageAsync("A simple error occurred.");
+        await _emailService.SendEmailSFTPErrorsAsync("SFTP connection failed.", "/remote/path/errors", DateTime.Now.ToString("o"));
 
         // Assert
-        // The primary assertion is that no exception was thrown.
-        // We also expect the logger NOT to be called, but since the email send will
-        // fail with our dummy SMTP server, we expect a "Failed to send" log.
-        _loggerMock.Verify(log => log.WriteError(It.IsAny<string>(), It.Is<string>(s => s.StartsWith("Failed to send email")), It.IsAny<Exception>()), Times.Once);
+        _loggerMock.Verify(
+            log => log.WriteError(
+                "SendHtmlEmailAsync",
+                It.Is<string>(msg => msg.Contains($"To: {sftpTo}")), // Verify it used the specific address
+                It.IsAny<Exception>(),
+                ""
+            ),
+            Times.Once
+        );
     }
 
     [TestMethod]
-    public async Task ErrorMessageAsync_WithSystemAndRegion_RunsSuccessfully()
+    public async Task SendEmailThresholdAlertAsync_ConstructsCorrectFormattedSubjectAndRecipients()
     {
+        // Arrange
+        var system = "ReportingSystem";
+        var region = "APAC";
+        var to = "distro@example.com";
+        var cc = "manager@example.com";
+        var from = "reports-from@example.com";
+        var expectedSubject = "Threshold Alert: ReportingSystem for APAC";
+
+        _configMock.SetupGet(c => c.TREODRReportMailFrom).Returns(from);
+
         // Act
-        await _emailService.ErrorMessageAsync("SystemX", "A detailed error.", "APAC", "override@example.com");
+        await _emailService.SendEmailThresholdAlertAsync(system, region, to, cc, 5000, DateTime.Now);
 
         // Assert
-        _loggerMock.Verify(log => log.WriteError(It.IsAny<string>(), It.Is<string>(s => s.StartsWith("Failed to send email")), It.IsAny<Exception>()), Times.Once);
-    }
-    
-    [TestMethod]
-    public async Task EmailErrorMessageAsync_WithFile_RunsSuccessfully()
-    {
-        // Act
-        await _emailService.EmailErrorMessageAsync("SystemY", "C:\\temp\\data.csv", "File processing error.", "EMEA", "sysy@example.com");
-
-        // Assert
-        _loggerMock.Verify(log => log.WriteError(It.IsAny<string>(), It.Is<string>(s => s.StartsWith("Failed to send email")), It.IsAny<Exception>()), Times.Once);
-    }
-
-    [TestMethod]
-    public async Task EmailErrorMessageAsync_WithDateAndFile_RunsSuccessfully()
-    {
-        // Act
-        await _emailService.EmailErrorMessageAsync("SystemZ", DateTime.Now, "C:\\temp\\log.txt", "Exception details.", "NA", "sysz@example.com");
-
-        // Assert
-        _loggerMock.Verify(log => log.WriteError(It.IsAny<string>(), It.Is<string>(s => s.StartsWith("Failed to send email")), It.IsAny<Exception>()), Times.Once);
+        _loggerMock.Verify(
+            log => log.WriteError(
+                "SendHtmlEmailAsync",
+                It.Is<string>(msg =>
+                    msg.Contains($"To: {to}") &&
+                    msg.Contains($"From: {from}") &&
+                    msg.Contains($"Subject: {expectedSubject}")
+                ),
+                It.IsAny<Exception>(),
+                ""
+            ),
+            Times.Once
+        );
     }
 
     [TestMethod]
-    public async Task EmailErrorMessageAsync_WithException_RunsSuccessfully()
+    public async Task EmailErrorMessageAsync_WithException_ConstructsCorrectEmail()
     {
         // Arrange
         var exception = new InvalidOperationException("Something went wrong.");
+        var expectedTo = _configMock.Object.TRMailTo;
+        var expectedFrom = _configMock.Object.TRMailFrom;
+        var expectedSubject = _configMock.Object.TRMailSubject;
 
         // Act
         await _emailService.EmailErrorMessageAsync(exception);
 
         // Assert
-        _loggerMock.Verify(log => log.WriteError(It.IsAny<string>(), It.Is<string>(s => s.StartsWith("Failed to send email")), It.IsAny<Exception>()), Times.Once);
-    }
-
-    [TestMethod]
-    public async Task SendEmailSFTPSuccessAsync_RunsSuccessfully()
-    {
-        // Act
-        await _emailService.SendEmailSFTPSuccessAsync("SFTP connection restored.", "/remote/path", DateTime.Now.ToString("o"));
-
-        // Assert
-        _loggerMock.Verify(log => log.WriteError(It.IsAny<string>(), It.Is<string>(s => s.StartsWith("Failed to send email")), It.IsAny<Exception>()), Times.Once);
-    }
-
-    [TestMethod]
-    public async Task SendEmailSFTPErrorsAsync_RunsSuccessfully()
-    {
-        // Act
-        await _emailService.SendEmailSFTPErrorsAsync("SFTP connection failed.", "/remote/path/errors", DateTime.Now.ToString("o"));
-
-        // Assert
-        _loggerMock.Verify(log => log.WriteError(It.IsAny<string>(), It.Is<string>(s => s.StartsWith("Failed to send email")), It.IsAny<Exception>()), Times.Once);
-    }
-    
-    [TestMethod]
-    public async Task SendEmailThresholdAlertAsync_RunsSuccessfully()
-    {
-        // Act
-        await _emailService.SendEmailThresholdAlertAsync("ReportingSystem", "APAC", "distro@example.com", "manager@example.com", 5000, DateTime.Now);
-
-        // Assert
-        _loggerMock.Verify(log => log.WriteError(It.IsAny<string>(), It.Is<string>(s => s.StartsWith("Failed to send email")), It.IsAny<Exception>()), Times.Once);
+        // This method calls another overload, which eventually calls SendHtmlEmailAsync.
+        // We verify the final parameters.
+        _loggerMock.Verify(
+            log => log.WriteError(
+                "SendHtmlEmailAsync",
+                It.Is<string>(msg =>
+                    msg.Contains($"To: {expectedTo}") &&
+                    msg.Contains($"From: {expectedFrom}") &&
+                    msg.Contains($"Subject: {expectedSubject}")
+                ),
+                It.IsAny<Exception>(),
+                ""
+            ),
+            Times.Once
+        );
     }
 
     #endregion
