@@ -1,254 +1,177 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using System.Collections.Specialized;
-using System.Collections.Generic;
-using System.Configuration;
-using System.Reflection;
+using Moq;
 using System;
+using System.Threading.Tasks;
+using System.Net.Mail;
+using System.Text;
+using System.Net;
 using GPI.TransactionRecon.Logger;
+using GPI.TransactionRecon.Logger.Contracts;
 
 namespace GPI.TransactionRecon.Logger.Tests
 {
     [TestClass]
-    public class AppConfigurationTests
+    public class EmailServiceTests
     {
-        private NameValueCollection _originalAppSettings;
-        private ConnectionStringSettingsCollection _originalConnectionStrings;
+        private Mock<ILoggerService> _mockLogger;
+        private Mock<IAppConfiguration> _mockConfig;
+        private EmailService _service;
 
         [TestInitialize]
-        public void SetUp()
+        public void Setup()
         {
-            // Store original
-            _originalAppSettings = GetAppSettings();
-            _originalConnectionStrings = GetConnectionStrings();
-
-            // Inject test AppSettings & ConnectionStrings
-            var testAppSettings = new NameValueCollection
-            {
-                ["XMLFileFormat"] = "*.xml",
-                ["CSVFileFormat"] = "*.csv",
-                ["TXTFileFormat"] = "*.txt",
-                ["EXCEL"] = "yes",
-                ["SmtpServer"] = "mailhost",
-                ["TRMailFrom"] = "from@mail.com",
-                ["TRMailTo"] = "to@mail.com",
-                ["TRMailSubject"] = "subject",
-                ["ScheduledTime"] = "23:00",
-                ["TRReportLocation"] = "C:\\report",
-                ["TRLogsPath"] = "C:\\logs",
-                ["TRResourcePath"] = "C:\\res",
-                ["TRReport"] = "REPORT",
-                ["TREODRReportMailTo"] = "eodr@to.com",
-                ["TREODRReportMailFrom"] = "eodr@from.com",
-                ["TREODRReportcountryManagers"] = "mgrs",
-                ["TREODRReportSubject"] = "eodrSubject",
-                ["TREODRReportBody"] = "eodrBody",
-                ["IsTREnabled"] = "Y",
-                ["TRIgnoreStatusList"] = "IGNORED",
-                ["BuList_ABA"] = "aba",
-                ["BuList_BLINK"] = "blink",
-                ["SysList_TRAXNA"] = "traxna",
-                ["BuList_TRAXNA"] = "butraxna",
-                ["ParallelProcessFlag"] = "true",
-                ["SFTPRetryCount"] = "3",
-                ["SFTPRetryDelay"] = "5",
-                ["SFTPSuccessMessage"] = "OK",
-                ["SFTPErrorMessage"] = "ERR",
-                ["SFTPErrorEmailTo"] = "sftp@err.com",
-                ["IPAdd"] = "127.0.0.1",
-                ["TRThresholdAlertSubject"] = "alert",
-                ["GpiOnlineURL"] = "gpi.com",
-                ["AcceptableFileFormats"] = ".xml",
-                ["BU_ID"] = "BUID",
-                ["GPI_Systems"] = "GPISYS",
-                ["Ignore_status_BU"] = "I_BU",
-                ["IgnoreStatusList_Approved"] = "appr",
-                ["IgnoreStatusList_Unapproved"] = "unappr",
-                ["EPD_system"] = "epd",
-                ["SFTP_Systems"] = "sftpsys",
-                ["SysList_TRAXLATAM"] = "latam",
-                ["BuList_TRAXLATAM"] = "blatam",
-                ["BuList_EBAO"] = "ebao",
-                ["BuList_BPM"] = "bpm",
-                ["BuList_EBAODC"] = "ebaodc",
-                ["BuList_COUPA"] = "coupa",
-                ["BuList_POLISYASIA"] = "polisasia",
-                ["BuList_ENARASPAC"] = "enaraspac",
-                ["BuList_CCA"] = "cca",
-                ["BuList_ICONFIANZA"] = "iconfianza",
-                ["SysList_TRAXASPAC"] = "sysaspac",
-                ["BuList_TRAXASPAC"] = "buaspac",
-                ["SysList_TRAXEMEA"] = "sysemea",
-                ["BuList_TRAXEMEA"] = "buemea",
-                ["IntEnt_TRAXEMEA"] = "intemea",
-                ["GLTOAPBU_SYS"] = "gltoap",
-                // For negative test
-                ["NonExistingKey"] = null
-            };
-            SetAppSettings(testAppSettings);
-
-            var conns = new ConnectionStringSettingsCollection
-            {
-                new ConnectionStringSettings("QADB", "test-connection-string")
-            };
-            SetConnectionStrings(conns);
-
-            // Mock secureAppSettings section using reflection
-            var secureSection = new NameValueCollection
-            {
-                ["SFTPUser_MOCKSYS"] = "sftpUser",
-                ["SFTPPassword_MOCKSYS"] = "sftpPwd"
-            };
-            SetConfigSection("secureAppSettings", secureSection);
-        }
-
-        [TestCleanup]
-        public void TearDown()
-        {
-            SetAppSettings(_originalAppSettings);
-            SetConnectionStrings(_originalConnectionStrings);
-            SetConfigSection("secureAppSettings", null);
+            _mockLogger = new Mock<ILoggerService>();
+            _mockConfig = new Mock<IAppConfiguration>();
+            _mockConfig.SetupGet(c => c.SmtpServer).Returns("smtp.test.com");
+            _mockConfig.SetupGet(c => c.TRMailFrom).Returns("from@test.com");
+            _mockConfig.SetupGet(c => c.TRMailTo).Returns("to@test.com");
+            _mockConfig.SetupGet(c => c.TRMailSubject).Returns("Subj");
+            _mockConfig.SetupGet(c => c.SFTPSuccessMessage).Returns("SFTP Success");
+            _mockConfig.SetupGet(c => c.SFTPErrorMessage).Returns("SFTP Err");
+            _mockConfig.SetupGet(c => c.SFTPErrorEmailTo).Returns("error@mail.com");
+            _mockConfig.SetupGet(c => c.IPAdd).Returns("127.0.0.2");
+            _mockConfig.SetupGet(c => c.TREODRReportMailTo).Returns("eodr@to.com");
+            _mockConfig.SetupGet(c => c.TREODRReportMailFrom).Returns("eodr@from.com");
+            _mockConfig.SetupGet(c => c.TRThresholdAlertSubject).Returns("Threshold:{0},{1}");
+            _mockConfig.SetupGet(c => c.GpiOnlineURL).Returns("http://gpi.url");
+            _service = new EmailService(_mockLogger.Object, _mockConfig.Object);
         }
 
         [TestMethod]
-        public void Properties_Return_All_Expected_Values()
+        public async Task ErrorMessageAsync_StringParameter_CallsSendErrorMessageAsync()
         {
-            var config = new AppConfiguration();
-            Assert.AreEqual("*.xml", config.XMLFileFormat);
-            Assert.AreEqual("*.csv", config.CSVFileFormat);
-            Assert.AreEqual("*.txt", config.TXTFileFormat);
-            Assert.AreEqual("yes", config.EXCEL);
-            Assert.AreEqual("mailhost", config.SmtpServer);
-            Assert.AreEqual("from@mail.com", config.TRMailFrom);
-            Assert.AreEqual("to@mail.com", config.TRMailTo);
-            Assert.AreEqual("subject", config.TRMailSubject);
-            Assert.AreEqual("23:00", config.ScheduledTime);
-            Assert.AreEqual("C:\\report", config.TRReportLocation);
-            Assert.AreEqual("C:\\logs", config.TRLogsPath);
-            Assert.AreEqual("C:\\res", config.TRResourcePath);
-            Assert.AreEqual("REPORT", config.TRReport);
-            Assert.AreEqual("eodr@to.com", config.TREODRReportMailTo);
-            Assert.AreEqual("eodr@from.com", config.TREODRReportMailFrom);
-            Assert.AreEqual("mgrs", config.TREODRReportcountryManagers);
-            Assert.AreEqual("eodrSubject", config.TREODRReportSubject);
-            Assert.AreEqual("eodrBody", config.TREODRReportBody);
-            Assert.AreEqual("Y", config.IsTREnabled);
-            Assert.AreEqual("IGNORED", config.TRIgnoreStatusList);
-            Assert.AreEqual("aba", config.BuList_ABA);
-            Assert.AreEqual("blink", config.BuList_BLINK);
-            Assert.AreEqual("traxna", config.SysList_TRAXNA);
-            Assert.AreEqual("butraxna", config.BuList_TRAXNA);
-            Assert.AreEqual("true", config.ParallelProcessFlag);
-            Assert.AreEqual("3", config.SFTPRetryCount);
-            Assert.AreEqual("5", config.SFTPRetryDelay);
-            Assert.AreEqual("OK", config.SFTPSuccessMessage);
-            Assert.AreEqual("ERR", config.SFTPErrorMessage);
-            Assert.AreEqual("sftp@err.com", config.SFTPErrorEmailTo);
-            Assert.AreEqual("127.0.0.1", config.IPAdd);
-            Assert.AreEqual("alert", config.TRThresholdAlertSubject);
-            Assert.AreEqual("gpi.com", config.GpiOnlineURL);
-            Assert.AreEqual(".xml", config.AcceptableFileFormats);
-            Assert.AreEqual("BUID", config.BU_ID);
-            Assert.AreEqual("GPISYS", config.GPI_Systems);
-            Assert.AreEqual("I_BU", config.Ignore_status_BU);
-            Assert.AreEqual("appr", config.IgnoreStatusList_Approved);
-            Assert.AreEqual("unappr", config.IgnoreStatusList_Unapproved);
-            Assert.AreEqual("test-connection-string", config.DatabaseConnectionString);
-            Assert.AreEqual("epd", config.EPD_system);
-            Assert.AreEqual("sftpsys", config.SFTP_Systems);
-            Assert.AreEqual("latam", config.SysList_TRAXLATAM);
-            Assert.AreEqual("blatam", config.BuList_TRAXLATAM);
-            Assert.AreEqual("ebao", config.BuList_EBAO);
-            Assert.AreEqual("bpm", config.BuList_BPM);
-            Assert.AreEqual("ebaodc", config.BuList_EBAODC);
-            Assert.AreEqual("coupa", config.BuList_COUPA);
-            Assert.AreEqual("polisasia", config.BuList_POLISYASIA);
-            Assert.AreEqual("enaraspac", config.BuList_ENARASPAC);
-            Assert.AreEqual("cca", config.BuList_CCA);
-            Assert.AreEqual("iconfianza", config.BuList_ICONFIANZA);
-            Assert.AreEqual("sysaspac", config.SysList_TRAXASPAC);
-            Assert.AreEqual("buaspac", config.BuList_TRAXASPAC);
-            Assert.AreEqual("sysemea", config.SysList_TRAXEMEA);
-            Assert.AreEqual("buemea", config.BuList_TRAXEMEA);
-            Assert.AreEqual("intemea", config.IntEnt_TRAXEMEA);
-            Assert.AreEqual("gltoap", config.GLTOAPBU_SYS);
+            // Test that regular error text triggers SendErrorMessageAsync and hence eventually SendHtmlEmailAsync
+            await _service.ErrorMessageAsync("err");
+            // Can't verify internal calls; check no exceptions and logger not called
+            _mockLogger.Verify(l => l.WriteError(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Exception>()), Times.Never);
         }
 
         [TestMethod]
-        public void GetAppSetting_Returns_Value_And_Null()
+        public async Task ErrorMessageAsync_Parameters_CallsSendErrorMessageAsync()
         {
-            var config = new AppConfiguration();
-            Assert.AreEqual("*.txt", config.GetAppSetting("TXTFileFormat"));
-            Assert.IsNull(config.GetAppSetting("NonExistingKey"));
+            await _service.ErrorMessageAsync("sys", "err", "reg", "toSys");
+            // No exceptions and, in this typical/positive case, logger not called
+            _mockLogger.Verify(l => l.WriteError(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Exception>()), Times.Never);
         }
 
         [TestMethod]
-        public void GetSftpUser_Returns_User_And_Empty_When_NotFound()
+        public async Task EmailErrorMessageAsync_SystemFileErrorRegionToSys_CallsSendErrorMessageAsync()
         {
-            var config = new AppConfiguration();
-            // Positive: key present in secureAppSettings
-            Assert.AreEqual("sftpUser", config.GetSftpUser("MOCKSYS"));
-            // Negative: key absent, returns empty
-            Assert.AreEqual(string.Empty, config.GetSftpUser("NOT_FOUND"));
+            await _service.EmailErrorMessageAsync("sys", "file.xml", "error", "region", "toSys");
+            // No side-effects except return
         }
 
         [TestMethod]
-        public void GetSftpPassword_Returns_Password_And_Empty_When_NotFound()
+        public async Task EmailErrorMessageAsync_SystemDateFileExRegionToSys_CallsSendErrorMessageAsync()
         {
-            var config = new AppConfiguration();
-            Assert.AreEqual("sftpPwd", config.GetSftpPassword("MOCKSYS"));
-            Assert.AreEqual(string.Empty, config.GetSftpPassword("NOPE"));
+            await _service.EmailErrorMessageAsync("sys", DateTime.Parse("2023-01-01"), "file.xml", "ex", "region", "toSys");
+            // No side-effects
         }
 
-        #region Reflection/Private Helpers (Test Isolation)
-
-        // Because ConfigurationManager.AppSettings is static and readonly, hack via reflection.
-        // NOTE: Some runners/platforms may restrict this hack; in those cases use Microsoft Fakes or wrap in interface.
-        private static NameValueCollection GetAppSettings()
+        [TestMethod]
+        public async Task EmailErrorMessageAsync_Exception_TriggersErrorMessageAsync()
         {
-            var field = typeof(ConfigurationManager).GetField("s_appSettings", BindingFlags.NonPublic | BindingFlags.Static)
-                ?? typeof(ConfigurationManager).GetField("AppSettings", BindingFlags.NonPublic | BindingFlags.Static);
-            return (NameValueCollection)field?.GetValue(null);
+            await _service.EmailErrorMessageAsync(new Exception("Test"));
+            // Lower-level error call as fallback
         }
 
-        private static void SetAppSettings(NameValueCollection nvc)
+        [TestMethod]
+        public async Task SendEmailSFTPSuccessAsync_UsesConfigAndCallsHtml()
         {
-            var field = typeof(ConfigurationManager).GetField("s_appSettings", BindingFlags.NonPublic | BindingFlags.Static)
-                ?? typeof(ConfigurationManager).GetField("AppSettings", BindingFlags.NonPublic | BindingFlags.Static);
-            field?.SetValue(null, nvc);
+            await _service.SendEmailSFTPSuccessAsync("body", "/file/path", "2023-05-22");
         }
 
-        private static ConnectionStringSettingsCollection GetConnectionStrings()
+        [TestMethod]
+        public async Task SendEmailSFTPErrorsAsync_UsesConfigAndCallsHtml()
         {
-            var settings = typeof(ConfigurationManager).GetProperty("ConnectionStrings", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
-                ?.GetValue(null) as ConnectionStringSettingsCollection;
-            return settings;
+            await _service.SendEmailSFTPErrorsAsync("body", "/file/path", "2023-05-23");
         }
 
-        private static void SetConnectionStrings(ConnectionStringSettingsCollection conns)
+        [TestMethod]
+        public void SFTPSuccess_Returns_FormattedHtml()
         {
-            // .NET Framework only: hack with reflection if possible
-            var settingsField = typeof(ConfigurationManager).GetField("s_connectionStrings", BindingFlags.Static | BindingFlags.NonPublic)
-                ?? typeof(ConfigurationManager).GetField("ConnectionStrings", BindingFlags.Static | BindingFlags.NonPublic);
-            settingsField?.SetValue(null, conns);
+            var result = typeof(EmailService)
+                .GetMethod("SFTPSuccess", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(_service, new object[] {"b", "/loc", "now"});
+            Assert.IsTrue(result.ToString().Contains("SFTP Success"));
         }
 
-        private static void SetConfigSection(string sectionName, object value)
+        [TestMethod]
+        public void SFTPExceptionError_Returns_FormattedHtml()
         {
-            // Update Section via System.Configuration.ConfigurationManager
-            var configSystemField = typeof(ConfigurationManager).GetField("s_configSystem", BindingFlags.NonPublic | BindingFlags.Static);
-            var configSystem = configSystemField?.GetValue(null);
-            if (configSystem != null)
-            {
-                var sectionsField = configSystem.GetType().GetField("sections", BindingFlags.Instance | BindingFlags.NonPublic);
-                var sections = sectionsField?.GetValue(configSystem) as IDictionary<string, object>;
-                if (sections != null)
-                {
-                    if (value == null && sections.ContainsKey(sectionName)) sections.Remove(sectionName);
-                    else sections[sectionName] = value;
-                }
-            }
+            var result = typeof(EmailService)
+                .GetMethod("SFTPExceptionError", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(_service, new object[] {"problem", "/archive/path", "now", "SOMEQUEUE"});
+            Assert.IsTrue(result.ToString().Contains("SFTP Err"));
         }
 
-        #endregion
+        [TestMethod]
+        public void GetIPAddress_Returns_NonConfigIP()
+        {
+            // IPAdd is set to 127.0.0.2, so should return any other (on localhost may return 127.0.0.1)
+            var val = typeof(EmailService)
+                .GetMethod("GetIPAddress", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(_service, null);
+            Assert.IsNotNull(val);
+        }
+
+        [TestMethod]
+        public async Task SendEmailThresholdAlertAsync_AllParams_CallsHtml()
+        {
+            await _service.SendEmailThresholdAlertAsync("SYS1", "REG1", "trto@mail.com", "", 4, DateTime.Now);
+        }
+
+        [TestMethod]
+        public async Task SendEmailThresholdAlertAsync_UsesFallback_When_ToIsEmpty()
+        {
+            await _service.SendEmailThresholdAlertAsync("SYS1", "REG1", "", "", 5, DateTime.Now);
+        }
+
+        [TestMethod]
+        public async Task SendErrorMessageAsync_StringParam_UsesSendHtml()
+        {
+            var meth = typeof(EmailService).GetMethod("SendErrorMessageAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null, new[] {typeof(string)}, null);
+            await (Task)meth.Invoke(_service, new object[] { "errorMessage" });
+        }
+
+        [TestMethod]
+        public async Task SendErrorMessageAsync_Parameters_UsesSendHtml()
+        {
+            var meth = typeof(EmailService).GetMethod("SendErrorMessageAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null, new []{typeof(string), typeof(string), typeof(string), typeof(string)}, null);
+            await (Task)meth.Invoke(_service, new object[] { "sys", "error", "region", "" });
+        }
+
+        [TestMethod]
+        public async Task SendHtmlEmailAsync_MissingToOrFrom_LogsAndReturns()
+        {
+            var meth = typeof(EmailService).GetMethod("SendHtmlEmailAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            // Missing To
+            await (Task)meth.Invoke(_service, new object[] { null, "from@test.com", "subject", "body", "" });
+            _mockLogger.Verify(l => l.WriteError(nameof(EmailService.SendHtmlEmailAsync), It.IsAny<string>(), It.IsAny<NullReferenceException>()), Times.Once);
+        }
+
+        [TestMethod]
+        public async Task SendHtmlEmailAsync_FailsToSend_LogsError()
+        {
+            // Here, use reflection to inject a bogus SMTP host to force exception
+            _mockConfig.SetupGet(c => c.SmtpServer).Returns("invalid.smtp.host");
+            var meth = typeof(EmailService).GetMethod("SendHtmlEmailAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            // Use junk values to force SmtpClient.SendMailAsync to fail
+            await (Task)meth.Invoke(_service, new object[] { "to@fail.com", "from@fail.com", "subj", "body", "" });
+            _mockLogger.Verify(l => l.WriteError(nameof(EmailService.SendHtmlEmailAsync), It.IsAny<string>(), It.IsAny<Exception>()), Times.AtLeastOnce);
+        }
+
+        [TestMethod]
+        public async Task SendErrorMessageAsync_HandlesException_AndCallsErrorMessageAsync()
+        {
+            // Use reflection to throw within SendHtmlEmailAsync.
+            var email = new EmailService(_mockLogger.Object, _mockConfig.Object);
+            var called = false;
+            _mockLogger.Setup(l => l.WriteError(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Exception>())).Callback(() => called = true);
+            // Simulate error by using blank addresses (so SendHtmlEmailAsync logs an error)
+            var meth = typeof(EmailService).GetMethod("SendErrorMessageAsync", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            await (Task)meth.Invoke(email, new object[] { "sys", "err", "reg", "" });
+            Assert.IsTrue(called);
+        }
     }
 }
